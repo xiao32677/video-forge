@@ -18,7 +18,7 @@ endif()
 option(VF_ENABLE_PLAYER "Enable embedded Qt Multimedia player preview" ON)
 option(VF_BUILD_TESTS  "Build unit tests" ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Concurrent Svg)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Concurrent Svg Network)
 if(VF_ENABLE_PLAYER)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Multimedia MultimediaWidgets)
 endif()
@@ -32,6 +32,7 @@ qt_standard_project_setup()
 qt_add_library(videoforge_core STATIC
     src/core/MediaInfo.cpp
     src/core/FfmpegLocator.cpp
+    src/core/FfmpegInstaller.cpp
     src/core/MediaProbe.cpp
     src/core/ThumbnailService.cpp
     src/core/ConvertPreset.cpp
@@ -45,7 +46,7 @@ qt_add_library(videoforge_core STATIC
 )
 
 target_include_directories(videoforge_core PUBLIC src)
-target_link_libraries(videoforge_core PUBLIC Qt6::Core Qt6::Gui Qt6::Concurrent)
+target_link_libraries(videoforge_core PUBLIC Qt6::Core Qt6::Gui Qt6::Concurrent Qt6::Network)
 if(WIN32)
     target_compile_definitions(videoforge_core PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
@@ -62,6 +63,7 @@ set(VF_UI_SOURCES
     src/ui/ConvertSettingsPanel.cpp
     src/ui/JobQueuePanel.cpp
     src/ui/LogPanel.cpp
+    src/ui/FfmpegDownloadDialog.cpp
     src/ui/AppIcon.cpp
 )
 

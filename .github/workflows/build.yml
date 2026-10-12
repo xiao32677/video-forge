@@ -1,0 +1,64 @@
+name: build
+
+# 目标：把"能不能构建、测试过不过"变成仓库里可见、可复现的证据，
+# 而不是只存在于开发者本机的一句"我这边是好的"。
+#
+# 说明：本项目只支持 Windows（Qt 6.9.3 + MinGW 13.1），所以矩阵只有 windows-latest。
+# 单元测试不需要 ffmpeg（job 层用的是 tests/fake_ffmpeg.cpp 这个测试替身），
+# 所以 CI 里不下载 115MB 的 ffmpeg，构建 + 测试能在两分钟内跑完。
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows / Qt 6.9.3 / MinGW
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Qt 6.9.3 (MinGW) 与工具链
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.9.3'
+          arch: win64_mingw
+          cache: true
+
+      - name: 打印环境信息
+        shell: pwsh
+        run: |
+          Write-Host "QT_ROOT_DIR = $env:QT_ROOT_DIR"
+          cmake --version
+          ninja --version
+          g++ --version
+
+      - name: 配置 (CMake + Ninja)
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
+            -DVF_BUILD_TESTS=ON
+
+      - name: 编译
+        shell: pwsh
+        run: cmake --build build --parallel
+
+      - name: 运行单元测试
+        shell: pwsh
+        run: ctest --test-dir build --output-on-failure
+
+      - name: 上传构建产物（可执行文件 + 测试程序）
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoForge-win64
+          path: |
+            build/VideoForge.exe
+            build/vf_tests.exe
+            build/vf_tests_job.exe
+          if-no-files-found: error

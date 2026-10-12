@@ -99,6 +99,8 @@
 | **E 只转选中项** | 媒体库 5 个文件，只选中 1 个 | **0** | **只产出 1 个输出文件**（修复前会转全部 5 个） |
 | **F 字幕保留** | `--preset mkv-remux --subtitles copy` | **0** | 输出 MKV 带 `subrip` 字幕轨；MP4 输出带 `mov_text` 字幕轨 |
 | **G MKV 无损换壳** | `--preset mkv-remux` | **0** | 输出 5.44 MB，**与源文件大小完全一致** → 确认是真正复制而非重编码 |
+| **H 小屏布局** | `--window-size 1366x740`（真实笔记本尺寸） | **0** | 布局完整无重叠、日志面板自动收起（见 `images/06-小屏适配.png`） |
+| **I ffmpeg 一键安装** | `--install-ffmpeg <url>`（本地 HTTP 服务提供真实的 109.5 MB zip） | **0** | 3.3 秒完成下载→解压→安装→校验；装出 `ffmpeg.exe / ffprobe.exe / LICENSE`；**随后该程序用这份下载来的 ffmpeg 成功完成了一次真实转换** |
 
 ### 4.3 输出文件校验（ffprobe 实测）
 
@@ -314,12 +316,13 @@
 ## 7. 复现方式
 
 ```powershell
-# 1) 依赖
+# 1) 依赖（只有这一步需要下载 115MB；不装也能跑单元测试）
 powershell -File scripts/get-ffmpeg.ps1
 Copy-Item third_party\ffmpeg\bin\* build\ffmpeg\bin\ -Recurse   # 让程序能自找到 ffmpeg
 
-# 2) 构建 + 单元测试
+# 2) 构建 + 单元测试（ctest 会跑 core 层与 job 层两个测试）
 powershell -File scripts/build.ps1 -RunTests
+ctest --test-dir build --output-on-failure
 
 # 3) 生成测试素材
 powershell -File scripts/make-test-media.ps1
@@ -327,6 +330,19 @@ powershell -File scripts/make-test-media.ps1
 # 4) GUI 端到端（真实转换 + 截图）
 .\build\VideoForge.exe --screenshot shots --autoconvert testdata\演示视频-720p.mp4
 
-# 5) 或用 CTest 跑端到端脚本
+# 5) 其他自测开关
+.\build\VideoForge.exe --screenshot shots --theme light --window-size 1366x740 <文件>   # 小屏布局
+.\build\VideoForge.exe --screenshot shots --preset mkv-remux --subtitles copy <文件>    # 字幕保留
+.\build\VideoForge.exe --screenshot shots --select <子串> <若干文件>                     # 只转选中项
+.\build\VideoForge.exe --install-ffmpeg <zip 的 http 地址>                              # 无界面安装 ffmpeg
+
+# 6) 端到端 CTest 脚本（默认 DISABLED，需要真实 ffmpeg 与图形环境）
 ctest --test-dir build -R vf_e2e --output-on-failure
 ```
+
+### 当前 CI 状态
+
+`.github/workflows/build.yml` 会在 `windows-latest` 上安装 Qt 6.9.3 + MinGW、
+配置、编译、跑 `ctest`。**该工作流已写好并通过 YAML 语法校验，但尚未在 GitHub 上实际运行过**
+（本地无法执行 GitHub Actions），首次推送后需要看一眼运行结果。
+单元测试不依赖真实 ffmpeg，所以 CI 不需要下载 115MB 的二进制。

@@ -92,6 +92,10 @@ private slots:
     void onPauseAll();
     void onResumeAll();
     void onChooseFfmpeg();
+    /// 一键下载安装 ffmpeg；返回是否成功
+    bool downloadFfmpeg();
+    /// 重新探测硬件编码能力（换过 ffmpeg 之后要重跑）
+    void refreshHardwareCapabilities();
     void onToggleTheme();
     void onAbout();
     void onJobAdded(vf::ConvertJob *job);

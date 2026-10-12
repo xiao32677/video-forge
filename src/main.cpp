@@ -6,6 +6,8 @@
 //            用于在没有人工点击的情况下验证整个客户端链路是否正常。
 // =============================================================================
 
+#include "core/FfmpegInstaller.h"
+#include "core/FfmpegLocator.h"
 #include "ui/AppIcon.h"
 #include "ui/MainWindow.h"
 #include "ui/Theme.h"
@@ -14,6 +16,8 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
 #include <QStringList>
 #include <QTimer>
@@ -62,6 +66,10 @@ int main(int argc, char *argv[])
         QStringLiteral("window-size"),
         QStringLiteral("指定窗口尺寸，例如 1024x680（用于验证小屏布局）"),
         QStringLiteral("宽x高"));
+    QCommandLineOption installFfmpegOption(
+        QStringLiteral("install-ffmpeg"),
+        QStringLiteral("无界面下载并安装 ffmpeg（自动化测试用），参数为下载地址"),
+        QStringLiteral("url"));
     parser.addOption(themeOption);
     parser.addOption(screenshotOption);
     parser.addOption(autoConvertOption);
@@ -69,7 +77,46 @@ int main(int argc, char *argv[])
     parser.addOption(subtitleOption);
     parser.addOption(selectOption);
     parser.addOption(windowSizeOption);
+    parser.addOption(installFfmpegOption);
     parser.process(app);
+
+    // ---------------------------------------------------------------- 无界面安装 ffmpeg
+    // 这条路径同时被自动化测试用来验证"下载 → 解压 → 安装 → 校验"整条链路，
+    // 不弹任何窗口，只靠退出码表示结果。
+    if (parser.isSet(installFfmpegOption)) {
+        FfmpegInstaller installer;
+        QEventLoop loop;
+        bool ok = false;
+        QString ffmpegPath;
+        QString errorMessage;
+        QObject::connect(&installer, &FfmpegInstaller::finished, &loop,
+                         [&](bool success, const QString &path, const QString &error) {
+                             ok = success;
+                             ffmpegPath = path;
+                             errorMessage = error;
+                             loop.quit();
+                         });
+        QObject::connect(&installer, &FfmpegInstaller::statusMessage, &loop,
+                         [](const QString &text) {
+                             const QString line = QStringLiteral("[install] %1\n").arg(text);
+                             fputs(qPrintable(line), stdout);
+                             fflush(stdout);
+                         });
+        installer.start(parser.value(installFfmpegOption));
+        loop.exec();
+
+        // 装完必须真的能跑起来才算成功
+        const QString version = ok ? FfmpegLocator::probeVersion(ffmpegPath) : QString();
+        const QString result = ok
+            ? QStringLiteral("OK\npath=%1\nversion=%2\n").arg(ffmpegPath, version)
+            : QStringLiteral("FAILED\n%1\n").arg(errorMessage);
+        QFile resultFile(QDir::tempPath() + QStringLiteral("/videoforge-install-result.txt"));
+        if (resultFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            resultFile.write(result.toUtf8());
+            resultFile.close();
+        }
+        return (ok && !version.isEmpty()) ? 0 : 1;
+    }
 
     const QString themeName = parser.value(themeOption).trimmed().toLower();
     theme::apply(app, themeName == QLatin1String("light") ? theme::Mode::Light : theme::Mode::Dark);

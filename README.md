@@ -3,12 +3,17 @@
 > 一个 **Windows 原生桌面客户端**（Qt 6 + C++17），基于 **ffmpeg 命令行** 完成音视频格式转换。
 > 目标用户是"不懂编解码参数的普通人"：拖进来 → 看一眼 → 点开始 → 拿到文件。
 
+[![build](https://github.com/OWNER/video-forge/actions/workflows/build.yml/badge.svg)](https://github.com/OWNER/video-forge/actions/workflows/build.yml)
+
+<!-- 推送前把上面两处 OWNER 换成你的 GitHub 用户名，否则徽章会 404 -->
+
 ![主界面](docs/images/01-主界面-深色.png)
 
 > 批量转换完成：[深色](docs/images/02-批量转换完成.png) ·
 > 转换中：[浅色主题](docs/images/03-转换中.png) ·
 > [纯浅色界面](docs/images/04-浅色主题.png) ·
-> [音频提取](docs/images/05-音频提取.png)
+> [音频提取](docs/images/05-音频提取.png) ·
+> [小屏适配 1366×740](docs/images/06-小屏适配.png)
 
 ---
 
@@ -68,9 +73,10 @@
 | 任务可控 | 暂停（挂起 ffmpeg 进程）/ 继续 / 取消 / 重试 / 移除 |
 | 体积/兼容性兜底 | 10bit、yuv444 源自动补 `-pix_fmt yuv420p`，避免老设备黑屏 |
 | 错误人话化 | "磁盘空间不足""文件被占用""源文件损坏"等，而不是丢一段 ffmpeg 英文报错 |
-| 依赖自知 | 启动自动定位 ffmpeg（内置 → PATH → 常见路径 → 手动选择），状态栏红/绿一眼看出 |
+| 依赖自知 | 启动自动定位 ffmpeg（内置 → 用户本地数据目录 → PATH → 常见路径 → 手动选择），状态栏红/绿一眼看出 |
+| **一键下载 ffmpeg** | 没找到 ffmpeg 时可以直接"自动下载并安装"：下载 → 解压 → 安装到程序目录 → 校验可执行 → 立即启用（含进度与取消） |
 | 深浅主题 | 现代扁平 QSS，深色默认，一键切换 |
-| 配置持久化 | 窗口几何、分栏比例、主题、输出目录、并发数全部记住 |
+| 配置持久化 | 窗口几何、分栏比例、主题、输出目录、并发数、**上次用的预设与字幕策略**全部记住 |
 
 ### 4~7. 文档、GitHub、客户端形态、可用性
 见 [docs/SESSION_SUMMARY.md](docs/SESSION_SUMMARY.md)（含**开发者决策记录与反馈**）、
@@ -115,8 +121,15 @@ powershell -File scripts/build.ps1 -QtDir "C:/Qt/6.9.3/mingw_64" -Config Release
 
 产物：
 - `build/VideoForge.exe` —— 主程序
-- `build/vf_tests.exe` —— 单元测试（209 项断言）
+- `build/vf_tests.exe` —— core 层单元测试（240 项断言）
+- `build/vf_tests_job.exe` —— job 层单元测试（71 项断言，用 `vf_fake_ffmpeg` 当测试替身）
 - `dist/VideoForge-1.0.0-win64-portable.zip` —— 绿色便携包（约 99 MB）
+
+### 持续集成
+
+`.github/workflows/build.yml` 会在每次 push / PR 时于 `windows-latest` 上
+安装 Qt 6.9.3 + MinGW、配置、编译、跑 `ctest`，并上传构建产物。
+单元测试不依赖真实 ffmpeg（job 层用测试替身），所以整个 CI 两分钟内能跑完。
 
 ---
 

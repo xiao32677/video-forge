@@ -11,6 +11,7 @@
 #include "job/JobQueue.h"
 #include "ui/AppIcon.h"
 #include "ui/ConvertSettingsPanel.h"
+#include "ui/FfmpegDownloadDialog.h"
 #include "ui/Icons.h"
 #include "ui/JobQueuePanel.h"
 #include "ui/LogPanel.h"
@@ -101,38 +102,7 @@ MainWindow::MainWindow(QWidget *parent)
     updateFfmpegStatus();
 
     // 硬件编码能力探测放到后台，别拖慢启动
-    if (m_locator->tools().valid()) {
-        const QString ffmpegPath = m_locator->tools().ffmpegPath;
-        auto *watcher = new QFutureWatcher<QList<HardwareCapability>>(this);
-        connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher]() {
-            const QList<HardwareCapability> capabilities = watcher->result();
-            watcher->deleteLater();
-            m_hwDetectionDone = true;
-            m_settings->setHardwareCapabilities(capabilities);
-
-            // 头部胶囊显示硬件加速能力，让"能不能加速"一眼可见
-            if (m_accelChip) {
-                QStringList available;
-                for (const HardwareCapability &capability : capabilities) {
-                    if (capability.available)
-                        available << capability.name;
-                }
-                if (available.isEmpty()) {
-                    m_accelChip->setText(QStringLiteral("软件编码 · CPU"));
-                    m_accelChip->setColor(theme::mutedText());
-                    m_accelChip->setGlyph(icons::Glyph::Gauge);
-                } else {
-                    m_accelChip->setText(QStringLiteral("硬件加速 · %1").arg(available.first()));
-                    m_accelChip->setColor(theme::successColor());
-                    m_accelChip->setGlyph(icons::Glyph::Bolt);
-                }
-            }
-        });
-        watcher->setFuture(QtConcurrent::run([this, ffmpegPath]() {
-            HwAccelDetector detector;
-            return detector.detect(ffmpegPath);
-        }));
-    }
+    refreshHardwareCapabilities();
 
     m_log->appendSystemMessage(
         m_locator->tools().valid()
@@ -1235,8 +1205,95 @@ void MainWindow::onJobSelectionChanged(const QString &jobId)
     }
 }
 
+bool MainWindow::downloadFfmpeg()
+{
+    FfmpegDownloadDialog dialog(this);
+    m_log->appendSystemMessage(QStringLiteral("开始自动下载 ffmpeg…"));
+    const int result = dialog.runAndDownload();
+    if (result != QDialog::Accepted || dialog.installedFfmpegPath().isEmpty()) {
+        m_log->appendSystemMessage(QStringLiteral("自动下载未完成。"));
+        return false;
+    }
+
+    if (!m_locator->useExecutable(dialog.installedFfmpegPath())) {
+        QMessageBox::warning(this, QStringLiteral("安装后校验失败"),
+                             QStringLiteral("下载完成的 ffmpeg 无法正常执行：\n%1")
+                                 .arg(QDir::toNativeSeparators(dialog.installedFfmpegPath())));
+        return false;
+    }
+
+    updateFfmpegStatus();
+    m_log->appendSystemMessage(QStringLiteral("✅ ffmpeg %1 已就绪：%2")
+                                   .arg(m_locator->tools().version,
+                                        QDir::toNativeSeparators(m_locator->tools().ffmpegPath)));
+    refreshHardwareCapabilities();
+    QMessageBox::information(this, QStringLiteral("安装成功"),
+                             QStringLiteral("ffmpeg %1 已安装并启用。\n%2")
+                                 .arg(m_locator->tools().version,
+                                      QDir::toNativeSeparators(m_locator->tools().ffmpegPath)));
+    return true;
+}
+
+void MainWindow::refreshHardwareCapabilities()
+{
+    if (!m_locator->tools().valid())
+        return;
+    const QString ffmpegPath = m_locator->tools().ffmpegPath;
+    auto *watcher = new QFutureWatcher<QList<HardwareCapability>>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher]() {
+        const QList<HardwareCapability> capabilities = watcher->result();
+        watcher->deleteLater();
+        m_hwDetectionDone = true;
+        m_settings->setHardwareCapabilities(capabilities);
+
+        // 头部胶囊显示硬件加速能力，让"能不能加速"一眼可见
+        if (!m_accelChip)
+            return;
+        QStringList available;
+        for (const HardwareCapability &capability : capabilities) {
+            if (capability.available)
+                available << capability.name;
+        }
+        if (available.isEmpty()) {
+            m_accelChip->setText(QStringLiteral("软件编码 · CPU"));
+            m_accelChip->setColor(theme::mutedText());
+            m_accelChip->setGlyph(icons::Glyph::Gauge);
+        } else {
+            m_accelChip->setText(QStringLiteral("硬件加速 · %1").arg(available.first()));
+            m_accelChip->setColor(theme::successColor());
+            m_accelChip->setGlyph(icons::Glyph::Bolt);
+        }
+    });
+    watcher->setFuture(QtConcurrent::run([ffmpegPath]() {
+        HwAccelDetector detector;
+        return detector.detect(ffmpegPath);
+    }));
+}
+
 void MainWindow::onChooseFfmpeg()
 {
+    // 没找到 ffmpeg 时先问一句：要不要一键下载？手动选路径是备选。
+    if (!m_locator->tools().valid()) {
+        QMessageBox ask(this);
+        ask.setWindowTitle(QStringLiteral("需要 ffmpeg"));
+        ask.setIcon(QMessageBox::Question);
+        ask.setText(QStringLiteral("VideoForge 需要 ffmpeg 才能转换视频，当前没有找到。"));
+        ask.setInformativeText(m_locator->failureReason()
+                               + QStringLiteral("\n\n要现在自动下载安装吗？（约 115 MB）"));
+        QPushButton *downloadButton = ask.addButton(QStringLiteral("自动下载并安装"),
+                                                    QMessageBox::AcceptRole);
+        QPushButton *manualButton = ask.addButton(QStringLiteral("我自己指定路径"),
+                                                  QMessageBox::ActionRole);
+        ask.addButton(QStringLiteral("取消"), QMessageBox::RejectRole);
+        ask.exec();
+        if (ask.clickedButton() == downloadButton) {
+            downloadFfmpeg();
+            return;
+        }
+        if (ask.clickedButton() != manualButton)
+            return;
+    }
+
     const QString filter = QStringLiteral("ffmpeg 可执行文件 (ffmpeg.exe);;所有文件 (*.*)");
     QString startDirectory;
     if (!m_locator->tools().ffmpegPath.isEmpty())
@@ -1259,16 +1316,7 @@ void MainWindow::onChooseFfmpeg()
                                           QDir::toNativeSeparators(m_locator->tools().ffmpegPath)));
 
         // 换 ffmpeg 后重新探测硬件能力
-        const QString ffmpegPath = m_locator->tools().ffmpegPath;
-        auto *watcher = new QFutureWatcher<QList<HardwareCapability>>(this);
-        connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher]() {
-            m_settings->setHardwareCapabilities(watcher->result());
-            watcher->deleteLater();
-        });
-        watcher->setFuture(QtConcurrent::run([ffmpegPath]() {
-            HwAccelDetector detector;
-            return detector.detect(ffmpegPath);
-        }));
+        refreshHardwareCapabilities();
     } else {
         QMessageBox::warning(
             this, QStringLiteral("设置失败"),

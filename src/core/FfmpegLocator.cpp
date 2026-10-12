@@ -69,12 +69,19 @@ QStringList FfmpegLocator::candidateDirectories()
     dirs << appDir + QStringLiteral("/tools/ffmpeg");
     dirs << appDir + QStringLiteral("/bin");
 
-    // 2) 开发期：源码树根目录下的 third_party 与临时 _toolchain
+    // 2) 用户在界面里点"自动下载"后安装的位置（程序目录不可写时会落到这里）
+    const QString localData = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (!localData.isEmpty()) {
+        dirs << localData + QStringLiteral("/ffmpeg/bin");
+        dirs << localData + QStringLiteral("/ffmpeg");
+    }
+
+    // 3) 开发期：源码树根目录下的 third_party 与临时 _toolchain
     QDir dir(appDir);
     dir.cdUp();
     dirs << dir.absolutePath() + QStringLiteral("/ffmpeg/bin");
 
-    // 3) 常见系统安装位置
+    // 4) 常见系统安装位置
 #ifdef Q_OS_WIN
     dirs << QStringLiteral("C:/ffmpeg/bin");
     dirs << QStringLiteral("C:/Program Files/ffmpeg/bin");
