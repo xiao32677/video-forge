@@ -1,0 +1,28 @@
+Qt 6.9.3 —— 许可与合规说明
+========================================
+
+本程序使用 Qt 6.9.3（The Qt Company，https://www.qt.io）构建，
+并以**动态链接**方式使用了以下 Qt 模块的官方预编译库：
+
+    Qt6Core / Qt6Gui / Qt6Widgets / Qt6Concurrent / Qt6Network / Qt6Svg
+    Qt6Multimedia / Qt6MultimediaWidgets
+    以及 platforms、imageformats、styles、tls、multimedia 等插件
+
+Qt 在开源使用场景下采用 GNU Lesser General Public License v3 (LGPL-3.0)。
+LGPL-3.0 完整文本见 https://www.gnu.org/licenses/lgpl-3.0.html
+
+为满足 LGPL-3.0 的要求，特别说明：
+
+  1. 本程序**未修改** Qt 的任何源代码或二进制文件；
+
+  2. Qt 以**动态链接库（DLL）**形式使用。因此你可以用自行编译的、
+     接口兼容的 Qt 库替换程序目录下的同名 DLL，来重新组合本程序；
+
+  3. 本程序自身源码以 MIT 许可发布（见同目录 VideoForge-MIT.txt），
+     可以自由获取与修改，从而能够重新链接 Qt；
+
+  4. Qt 的完整源码可从 https://download.qt.io/ 获取。
+
+如果你的使用场景不接受 LGPL-3.0，可以向 The Qt Company 购买商业许可，
+或改用其它 GUI 框架重新实现界面层（本项目的界面层位于 src/ui/，
+与核心逻辑 src/core/ 已完全解耦，替换界面不需要改动转换逻辑）。

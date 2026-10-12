@@ -125,64 +125,30 @@ if (-not $SkipFfmpeg) {
 }
 
 # ---- 第三方许可：分发 Qt DLL 与 ffmpeg 二进制必须一并给出许可与来源说明 ----
+# 说明文本以仓库里的 LICENSES/ 为唯一来源（这样在仓库里也能直接读到），
+# 打包时复制过去；ffmpeg 的许可证全文则从内置的 ffmpeg/bin 取。
 $licenseDir = Join-Path $packageDir "LICENSES"
 New-Item -ItemType Directory -Force -Path $licenseDir | Out-Null
 
 if (Test-Path (Join-Path $root "LICENSE")) {
     Copy-Item (Join-Path $root "LICENSE") (Join-Path $licenseDir "VideoForge-MIT.txt") -Force
 }
+
+$repoLicenses = Join-Path $root "LICENSES"
+if (Test-Path $repoLicenses) {
+    Get-ChildItem $repoLicenses -File | ForEach-Object {
+        Copy-Item $_.FullName (Join-Path $licenseDir $_.Name) -Force
+    }
+} else {
+    Write-Host "    注意：仓库里没有 LICENSES/ 目录，包内将缺少 Qt 许可说明" -ForegroundColor Yellow
+}
+
 $ffmpegLicense = Join-Path $packageDir "ffmpeg/bin/LICENSE"
 if (Test-Path $ffmpegLicense) {
     Copy-Item $ffmpegLicense (Join-Path $licenseDir "ffmpeg-GPL-3.0.txt") -Force
+} else {
+    Write-Host "    注意：没有找到 ffmpeg 的 LICENSE 文件（分发 GPL 二进制应附带许可证）" -ForegroundColor Yellow
 }
-
-@"
-Qt 6.9.3 —— 许可与合规说明
-========================================
-
-本程序使用 Qt 6.9.3（The Qt Company，https://www.qt.io）构建，
-并以动态链接方式使用了以下 Qt 模块的官方预编译库：
-
-    Qt6Core / Qt6Gui / Qt6Widgets / Qt6Concurrent / Qt6Network / Qt6Svg
-    Qt6Multimedia / Qt6MultimediaWidgets
-    以及 platforms、imageformats、styles、tls、multimedia 等插件
-
-Qt 在开源使用场景下采用 GNU Lesser General Public License v3 (LGPL-3.0)。
-LGPL-3.0 完整文本见 https://www.gnu.org/licenses/lgpl-3.0.html
-
-为满足 LGPL-3.0 的要求，特别说明：
-  1. 本程序**未修改** Qt 的任何源代码或二进制文件；
-  2. Qt 以**动态链接库（DLL）**形式使用，因此你可以用自己编译的、
-     接口兼容的 Qt 库替换本目录下的同名 DLL 来重新组合本程序；
-  3. 本程序自身源码以 MIT 许可发布（见 VideoForge-MIT.txt），
-     可自由获取与修改，从而可以重新链接 Qt；
-  4. 如果你需要 Qt 的完整源码，请从 https://download.qt.io/ 获取。
-
-如果你的使用场景不接受 LGPL-3.0，可以向 The Qt Company 购买商业许可，
-或改用其它 GUI 框架重新实现界面层。
-"@ | Set-Content -Path (Join-Path $licenseDir "Qt-LGPL-3.0-说明.txt") -Encoding UTF8
-
-@"
-第三方组件清单
-========================================
-
-组件        版本                              许可            用途
-------------------------------------------------------------------------------------
-Qt          6.9.3 (mingw_64)                  LGPL-3.0        界面框架、播放器、网络
-ffmpeg      9.0.2-essentials (gyan.dev)       GPL-3.0         音视频转换与信息读取（子进程调用）
-MinGW-w64   GCC 13.1.0                        GPL/LGPL 例外   编译器与运行库
-VideoForge  1.0.0                             MIT             本项目自身代码
-
-ffmpeg 的使用方式说明：
-    本程序**不修改也不链接** ffmpeg 代码，而是以**独立子进程**方式调用
-    ffmpeg.exe / ffprobe.exe 的命令行接口。因此本程序自身的 MIT 许可
-    不受 ffmpeg 的 GPL 许可影响。
-
-    但请注意：随包分发的 ffmpeg 二进制本身是 GPL-3.0 许可的，
-    其许可证全文见 LICENSES/ffmpeg-GPL-3.0.txt。
-    如需替换为 LGPL 构建：删除 ffmpeg/bin 目录，把你自己的 ffmpeg.exe 与
-    ffprobe.exe 放进同一位置即可，程序会自动使用你提供的版本。
-"@ | Set-Content -Path (Join-Path $licenseDir "第三方组件清单.txt") -Encoding UTF8
 
 # ---- 额外说明文件 ----
 @"
