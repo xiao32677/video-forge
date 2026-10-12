@@ -264,7 +264,7 @@ void testCommandBuilder()
         CHECK(plan.arguments.indexOf(QStringLiteral("-i")) < plan.arguments.size() - 1);
     }
 
-    // ---- 无损换壳：视频音频都复制 ----
+    // ---- 无损换壳：视频音频都必须"原样复制" ----
     {
         const ConvertPreset preset = presetById(QStringLiteral("mkv-remux"));
         ConvertOptions options;
@@ -273,8 +273,26 @@ void testCommandBuilder()
         options.outputPath = QStringLiteral("C:/out/out.mkv");
         const CommandPlan plan = CommandBuilder::build(ffmpeg, info, preset, options);
         CHECK(plan.valid);
-        CHECK(plan.arguments.contains(QStringLiteral("copy")));
+        // 关键回归：remux 预设的 videoCodec 是空的（表示"原样复制"），
+        // 但它绝不能被当成"纯音频预设"——否则视频流既不被映射也不被复制，
+        // 输出会退化成用默认编码器重新编码。
+        CHECK(!preset.isAudioOnly());
+        CHECK(plan.arguments.contains(QStringLiteral("-map")));
+        CHECK(plan.arguments.contains(QStringLiteral("0:v:0?")));
+        CHECK_EQ(plan.arguments.count(QStringLiteral("copy")), 2);   // 视频 + 音频各一次
         CHECK(!plan.arguments.contains(QStringLiteral("libx264")));
+    }
+
+    // ---- 纯音频预设必须被正确识别 ----
+    {
+        CHECK(presetById(QStringLiteral("mp3")).isAudioOnly());
+        CHECK(presetById(QStringLiteral("m4a")).isAudioOnly());
+        CHECK(presetById(QStringLiteral("wav")).isAudioOnly());
+        CHECK(presetById(QStringLiteral("flac")).isAudioOnly());
+        CHECK(presetById(QStringLiteral("m4a-copy")).isAudioOnly());
+        CHECK(!presetById(QStringLiteral("mkv-remux")).isAudioOnly());
+        CHECK(!presetById(QStringLiteral("gif")).isAudioOnly());
+        CHECK(!presetById(QStringLiteral("avi-xvid")).isAudioOnly());
     }
 
     // ---- 裁剪 + 缩放 + 帧率 ----
@@ -535,6 +553,65 @@ void testSizeEstimator()
     CHECK(copyEstimate.reliable);
 }
 
+void testFreeSpaceGuard()
+{
+    section(QStringLiteral("磁盘空间判定 (SizeEstimator::evaluateFreeSpace)"));
+
+    const qint64 mb = 1024LL * 1024LL;
+
+    // 空间充足：10MB 需求 * 1.1 = 11MB，给 50MB
+    {
+        const FreeSpaceVerdict verdict = SizeEstimator::evaluateFreeSpace(10 * mb, 50 * mb);
+        CHECK(verdict.enough);
+        CHECK_EQ(verdict.missingBytes, 0LL);
+        CHECK_EQ(verdict.requiredBytes, static_cast<qint64>(10 * mb * 1.10));
+    }
+
+    // 刚好等于估算值：因为安全余量 1.1，仍然应该判定为"不够"
+    {
+        const FreeSpaceVerdict verdict = SizeEstimator::evaluateFreeSpace(10 * mb, 10 * mb);
+        CHECK(!verdict.enough);
+        CHECK(verdict.missingBytes > 0);
+        CHECK_EQ(verdict.missingBytes, verdict.requiredBytes - verdict.freeBytes);
+    }
+
+    // 严重不足：必须精确报出差额
+    {
+        const FreeSpaceVerdict verdict = SizeEstimator::evaluateFreeSpace(100 * mb, 30 * mb);
+        CHECK(!verdict.enough);
+        CHECK_EQ(verdict.requiredBytes, static_cast<qint64>(100 * mb * 1.10));
+        CHECK_EQ(verdict.freeBytes, 30 * mb);
+        CHECK_EQ(verdict.missingBytes, static_cast<qint64>(100 * mb * 1.10) - 30 * mb);
+    }
+
+    // 完全没空间
+    {
+        const FreeSpaceVerdict verdict = SizeEstimator::evaluateFreeSpace(5 * mb, 0);
+        CHECK(!verdict.enough);
+        CHECK_EQ(verdict.missingBytes, verdict.requiredBytes);
+    }
+
+    // 估不出体积时不能拦人（否则会误伤）
+    {
+        const FreeSpaceVerdict verdict = SizeEstimator::evaluateFreeSpace(0, 1 * mb);
+        CHECK(verdict.enough);
+        CHECK_EQ(verdict.requiredBytes, 0LL);
+    }
+
+    // 安全系数设为 1.0 时，刚好够就应该放行
+    {
+        const FreeSpaceVerdict verdict = SizeEstimator::evaluateFreeSpace(10 * mb, 10 * mb, 1.0);
+        CHECK(verdict.enough);
+    }
+
+    // 负数/异常输入不能崩，也不能误判成"够"
+    {
+        const FreeSpaceVerdict verdict = SizeEstimator::evaluateFreeSpace(10 * mb, -5);
+        CHECK(!verdict.enough);
+        CHECK_EQ(verdict.freeBytes, 0LL);
+    }
+}
+
 void testPresets()
 {
     section(QStringLiteral("预设定义 (ConvertPreset)"));
@@ -574,6 +651,7 @@ int main(int argc, char *argv[])
     testProgressParser();
     testHwAccel();
     testSizeEstimator();
+    testFreeSpaceGuard();
     testPresets();
 
     out() << "\n============================================\n"

@@ -145,4 +145,30 @@ QString SizeEstimator::describe(const SizeEstimate &estimate)
     return text;
 }
 
+FreeSpaceVerdict SizeEstimator::evaluateFreeSpace(qint64 estimatedBytes, qint64 freeBytes,
+                                                  double safetyFactor)
+{
+    FreeSpaceVerdict verdict;
+    verdict.freeBytes = qMax<qint64>(0, freeBytes);
+
+    if (estimatedBytes <= 0) {
+        // 估不出来就不拦，交给 ffmpeg 自己报错——总比误拦用户好
+        verdict.enough = true;
+        verdict.requiredBytes = 0;
+        return verdict;
+    }
+    if (safetyFactor < 1.0)
+        safetyFactor = 1.0;
+
+    verdict.requiredBytes = static_cast<qint64>(estimatedBytes * safetyFactor);
+    if (verdict.freeBytes >= verdict.requiredBytes) {
+        verdict.enough = true;
+        return verdict;
+    }
+
+    verdict.enough = false;
+    verdict.missingBytes = verdict.requiredBytes - verdict.freeBytes;
+    return verdict;
+}
+
 } // namespace vf

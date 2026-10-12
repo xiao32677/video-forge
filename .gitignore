@@ -22,7 +22,10 @@ testdata/
 shots/
 shots-*/
 tests_out.txt
+tests_core.txt
+tests_job.txt
 _pkgtest/
+.git-msg-*.txt
 
 # ---- 第三方二进制（体积大，用 scripts/get-ffmpeg.ps1 下载）----
 third_party/ffmpeg/

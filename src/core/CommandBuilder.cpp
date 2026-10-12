@@ -149,6 +149,28 @@ CommandPlan CommandBuilder::build(const QString &ffmpegPath,
     if (!options.removeAudio && info.hasAudio())
         args << QStringLiteral("-map") << QStringLiteral("0:a:0?");
 
+    // ------------------------------------------------------------------ 字幕
+    // 字幕要么被明确保留，要么被明确告知会丢弃 —— 不能像以前那样"悄悄没了"。
+    const bool wantSubtitles = (options.subtitleMode == QLatin1String("copy"))
+        && info.hasSubtitles() && !preset.isAudioOnly();
+    if (wantSubtitles) {
+        if (!preset.subtitleCapable) {
+            plan.warnings << QStringLiteral("「%1」这种容器放不下字幕轨，字幕不会被保留。")
+                                 .arg(preset.displayName);
+        } else {
+            args << QStringLiteral("-map") << QStringLiteral("0:s?");
+            // MP4/MOV 只认 mov_text，需要转一道（字幕很小，几乎不耗时）；
+            // MKV 可以直接复制原字幕轨，保持零损失。
+            const QString container = preset.container;
+            if (container == QLatin1String("mp4") || container == QLatin1String("mov")
+                || container == QLatin1String("ipod")) {
+                args << QStringLiteral("-c:s") << QStringLiteral("mov_text");
+            } else {
+                args << QStringLiteral("-c:s") << QStringLiteral("copy");
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ 视频
     bool videoStreamCopied = false;
     if (wantVideoTrack) {

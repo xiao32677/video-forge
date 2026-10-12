@@ -24,7 +24,7 @@ const QList<ConvertPreset> &builtinPresets()
             QStringLiteral("最稳妥的选择：手机、电视、微信、剪辑软件全都认。"),
             QStringLiteral("mp4"), QStringLiteral("mp4"),
             QStringLiteral("libx264"), QStringLiteral("aac"),
-            23, QStringLiteral("medium"), 192, true, true, true
+            23, QStringLiteral("medium"), 192, true, true, true, true
         },
         {
             QStringLiteral("mp4-h265"), QStringLiteral("MP4 · 高压缩（HEVC/H.265 + AAC）"),
@@ -32,7 +32,7 @@ const QList<ConvertPreset> &builtinPresets()
             QStringLiteral("同画质下体积约为 H.264 的 60%，但老设备可能放不动。"),
             QStringLiteral("mp4"), QStringLiteral("mp4"),
             QStringLiteral("libx265"), QStringLiteral("aac"),
-            26, QStringLiteral("medium"), 192, true, true, true
+            26, QStringLiteral("medium"), 192, true, true, true, true
         },
         {
             QStringLiteral("webm-vp9"), QStringLiteral("WebM · 网页友好（VP9 + Opus）"),
@@ -48,7 +48,7 @@ const QList<ConvertPreset> &builtinPresets()
             QStringLiteral("只换容器不重编码，几秒完成、画质零损失，用来换封装格式。"),
             QStringLiteral("matroska"), QStringLiteral("mkv"),
             QString(), QString(),
-            0, QString(), 0, true, true, false
+            0, QString(), 0, true, true, false, true
         },
         {
             QStringLiteral("mov-prores"), QStringLiteral("MOV · 剪辑友好（H.264 高码率）"),
@@ -56,7 +56,7 @@ const QList<ConvertPreset> &builtinPresets()
             QStringLiteral("给剪辑软件（Premiere / FCP / 达芬奇）用的中间素材。"),
             QStringLiteral("mov"), QStringLiteral("mov"),
             QStringLiteral("libx264"), QStringLiteral("aac"),
-            16, QStringLiteral("fast"), 256, true, true, true
+            16, QStringLiteral("fast"), 256, true, true, true, true
         },
         {
             QStringLiteral("avi-xvid"), QStringLiteral("AVI · 老设备（MPEG-4）"),
@@ -81,7 +81,7 @@ const QList<ConvertPreset> &builtinPresets()
             QStringLiteral("从视频里抽出声音，兼容性最好的音频格式。"),
             QStringLiteral("mp3"), QStringLiteral("mp3"),
             QString(), QStringLiteral("libmp3lame"),
-            0, QString(), 192, false, true, false
+            0, QString(), 192, false, true, false, false, true
         },
         {
             QStringLiteral("m4a"), QStringLiteral("M4A · 纯音频提取（AAC）"),
@@ -89,7 +89,7 @@ const QList<ConvertPreset> &builtinPresets()
             QStringLiteral("同样体积下音质优于 MP3，苹果设备首选。"),
             QStringLiteral("ipod"), QStringLiteral("m4a"),
             QString(), QStringLiteral("aac"),
-            0, QString(), 192, false, true, false
+            0, QString(), 192, false, true, false, false, true
         },
         {
             QStringLiteral("wav"), QStringLiteral("WAV · 无损音频"),
@@ -97,7 +97,7 @@ const QList<ConvertPreset> &builtinPresets()
             QStringLiteral("无压缩，体积大，用于后期处理。"),
             QStringLiteral("wav"), QStringLiteral("wav"),
             QString(), QStringLiteral("pcm_s16le"),
-            0, QString(), 0, false, false, false
+            0, QString(), 0, false, false, false, false, true
         },
         {
             QStringLiteral("flac"), QStringLiteral("FLAC · 无损压缩音频"),
@@ -105,7 +105,7 @@ const QList<ConvertPreset> &builtinPresets()
             QStringLiteral("无损但体积约为 WAV 的 60%，适合音乐归档。"),
             QStringLiteral("flac"), QStringLiteral("flac"),
             QString(), QStringLiteral("flac"),
-            0, QString(), 0, false, true, false
+            0, QString(), 0, false, true, false, false, true
         },
         {
             QStringLiteral("m4a-copy"), QStringLiteral("M4A · 音频直接复制（最快）"),
@@ -113,7 +113,7 @@ const QList<ConvertPreset> &builtinPresets()
             QStringLiteral("音频流不重编码，瞬间完成、音质零损失。"),
             QStringLiteral("ipod"), QStringLiteral("m4a"),
             QString(), QString(),
-            0, QString(), 0, false, true, false
+            0, QString(), 0, false, true, false, false, true
         },
     };
     return presets;

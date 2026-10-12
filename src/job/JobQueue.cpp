@@ -22,12 +22,13 @@ JobQueue::~JobQueue()
 
 QString JobQueue::enqueue(const MediaInfo &info, const ConvertPreset &preset, const ConvertOptions &options)
 {
-    const QString ffmpegPath = m_locator ? m_locator->tools().ffmpegPath : QString();
+    const FfmpegTools tools = m_locator ? m_locator->tools() : FfmpegTools();
     const QString jobId = QStringLiteral("job-%1-%2")
                               .arg(m_nextId++)
                               .arg(QUuid::createUuid().toString(QUuid::WithoutBraces).left(6));
 
-    auto *job = new ConvertJob(jobId, info, preset, options, ffmpegPath, this);
+    auto *job = new ConvertJob(jobId, info, preset, options,
+                               tools.ffmpegPath, tools.ffprobePath, this);
 
     connect(job, &ConvertJob::stateChanged, this, [this](const QString &, JobState) {
         if (auto *changed = qobject_cast<ConvertJob *>(sender()))

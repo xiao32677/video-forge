@@ -37,7 +37,8 @@ class ConvertJob : public QObject
 public:
     ConvertJob(const QString &jobId, const MediaInfo &info,
                const ConvertPreset &preset, const ConvertOptions &options,
-               const QString &ffmpegPath, QObject *parent = nullptr);
+               const QString &ffmpegPath, const QString &ffprobePath,
+               QObject *parent = nullptr);
     ~ConvertJob() override;
 
     QString jobId() const { return m_jobId; }
@@ -57,6 +58,14 @@ public:
     QString errorMessage() const { return m_errorMessage; }
     QString logText() const { return m_logText; }
     QStringList warnings() const { return m_plan.warnings; }
+
+    /// 产物校验结果（成功后填写，供界面展示"已校验"的证据）
+    struct Verification {
+        bool ok = false;
+        QString summary;    ///< 校验通过时的简述，例如 "12.0s · H.264 + AAC"
+        QString problem;    ///< 校验失败原因
+    };
+    Verification verification() const { return m_verification; }
 
     /// 准备阶段发现的问题（例如源文件没有视频流），此时任务不会被调度
     bool isRunnable() const { return m_plan.valid; }
@@ -92,12 +101,16 @@ private:
     void setState(JobState state);
     void appendLog(const QString &text);
     void updateProgressFromParser();
+    /// ffmpeg 返回 0 之后，用 ffprobe 复核产物；在工作线程里跑
+    Verification verifyOutput() const;
+    void finishAfterVerification();
 
     QString m_jobId;
     MediaInfo m_mediaInfo;
     ConvertPreset m_preset;
     ConvertOptions m_options;
     QString m_ffmpegPath;
+    QString m_ffprobePath;
     CommandPlan m_plan;
 
     QProcess *m_process = nullptr;
@@ -109,6 +122,7 @@ private:
     QString m_errorMessage;
     QString m_logText;
     QElapsedTimer m_timer;
+    Verification m_verification;
     bool m_cancelRequested = false;
     bool m_pausedByUser = false;
     double m_pausedDurationMs = 0.0;

@@ -50,10 +50,20 @@ int main(int argc, char *argv[])
         QStringLiteral("preset"),
         QStringLiteral("启动时使用指定的转换预设 id（例如 mp4-h264 / mp3 / gif）"),
         QStringLiteral("预设id"));
+    QCommandLineOption subtitleOption(
+        QStringLiteral("subtitles"),
+        QStringLiteral("字幕策略：drop（默认）或 copy（保留原字幕轨）"),
+        QStringLiteral("策略"));
+    QCommandLineOption selectOption(
+        QStringLiteral("select"),
+        QStringLiteral("按文件名子串多选媒体库内容（用于验证“只转选中项”）"),
+        QStringLiteral("子串"));
     parser.addOption(themeOption);
     parser.addOption(screenshotOption);
     parser.addOption(autoConvertOption);
     parser.addOption(presetOption);
+    parser.addOption(subtitleOption);
+    parser.addOption(selectOption);
     parser.process(app);
 
     const QString themeName = parser.value(themeOption).trimmed().toLower();
@@ -68,6 +78,10 @@ int main(int argc, char *argv[])
     const QString presetId = parser.value(presetOption).trimmed();
     if (!presetId.isEmpty() && !window.setPresetForTest(presetId)) {
         qWarning("未知预设 id：%s", qPrintable(presetId));
+    }
+    const QString subtitleMode = parser.value(subtitleOption).trimmed();
+    if (!subtitleMode.isEmpty() && !window.setSubtitleModeForTest(subtitleMode)) {
+        qWarning("未知字幕策略：%s", qPrintable(subtitleMode));
     }
 
     const QString screenshotDirectory = parser.value(screenshotOption);
@@ -94,7 +108,13 @@ int main(int argc, char *argv[])
         const bool autoConvert = parser.isSet(autoConvertOption);
         const QString directory = screenshotDirectory;
 
-        // 自测时间线：等缩略图与信息就绪 -> 截图 -> 触发转换 -> 截转换中 -> 截完成 -> 退出
+        // 自测时间线：等缩略图与信息就绪 -> （可选）选中部分文件 -> 截图 -> 触发转换 -> 截图 -> 退出
+        const QString selectPattern = parser.value(selectOption);
+        QTimer::singleShot(5000, &window, [&window, selectPattern]() {
+            if (!selectPattern.isEmpty())
+                window.selectForTest(selectPattern);
+        });
+
         QTimer::singleShot(7000, &window, [&window, directory, autoConvert]() {
             window.grab().save(directory + QStringLiteral("/01-主界面.png"), "PNG");
             // 布局诊断输出：排查控件把侧栏撑宽的问题

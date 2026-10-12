@@ -37,9 +37,15 @@ struct ConvertPreset
     bool videoCopyable = true;  ///< 是否允许"直接复制视频流"（无损快速）
     bool audioCopyable = true;  ///< 是否允许"直接复制音频流"
     bool supportsHardware = true; ///< 是否支持硬件编码加速
+    bool subtitleCapable = false; ///< 该容器能否承载字幕轨（mp4/mkv/mov 可以；avi/gif/音频不行）
+    /// 是否是"纯音频"预设（只输出音频，没有视频轨）。
+    /// 注意：不能用"videoCodec 是否为空"来判断——无损换壳（remux）预设的 videoCodec
+    /// 也是空的（因为它的意思是"原样复制"），但它是视频预设。这里踩过坑，
+    /// 导致 MKV 无损换壳实际上没有映射/复制视频流。
+    bool audioOnly = false;
 
     bool isValid() const { return !id.isEmpty(); }
-    bool isAudioOnly() const { return videoCodec.isEmpty(); }
+    bool isAudioOnly() const { return audioOnly; }
 };
 
 /// 内置预设全集（顺序即界面展示顺序）

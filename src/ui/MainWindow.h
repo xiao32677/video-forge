@@ -59,6 +59,9 @@ public:
     bool isMediaReady(const QString &filePath) const;
     void triggerConversionForTest();
     bool setPresetForTest(const QString &presetId);
+    bool setSubtitleModeForTest(const QString &mode);
+    /// 按文件名子串多选媒体库内容（验证"只转选中项"）
+    int selectForTest(const QString &substring);
 
     /// 布局诊断：列出界面里"最小宽度需求"最大的若干控件。
     /// 用于排查"某个控件把侧栏撑宽导致右侧被裁掉"这类问题。
@@ -112,6 +115,10 @@ private:
     void updateFfmpegStatus();
     void refreshThumbnails(const MediaInfo &info);
     void probeFile(const QString &filePath);
+    /// 刷新"这次会转换哪几个文件"的提示
+    void updateConversionScope();
+    /// 磁盘空间预检：不够就直接拦住，并告诉用户还差多少
+    bool confirmDiskSpace(const QHash<QString, qint64> &volumeEstimates, int fileCount);
     void recomputeBusyState();
     void notify(const QString &title, const QString &message, bool warning = false);
     void openContainingFolder(const QString &filePath);

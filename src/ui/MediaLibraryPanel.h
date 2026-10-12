@@ -27,8 +27,13 @@ public:
     int addPaths(const QStringList &paths);
 
     QStringList mediaPaths() const;
+    /// 当前选中的文件；没有选中时返回空列表
+    QStringList selectedPaths() const;
     QString currentPath() const;
     int count() const;
+
+    /// 媒体库内容或选中状态变化（用于刷新"将要转换 N 个文件"的提示）
+    int selectionCount() const;
 
     /// 用探测结果更新列表项的副标题（例如 "1920x1080 · 00:01:23 · 12.4 MB"）
     void updateItemDetails(const QString &filePath, const QString &details);
@@ -39,15 +44,22 @@ public:
     void markFailed(const QString &filePath, const QString &reason);
 
     void selectPath(const QString &filePath);
+    /// 按文件名子串多选（自动化测试用），返回命中数量
+    int selectMatching(const QString &substring);
+    void clearSelection();
     void removeSelected();
     void clearAll();
 
 signals:
     void pathsAdded(int count);
     void currentChanged(const QString &filePath);
+    /// 选中项发生变化（数量或内容）
+    void selectionChanged();
     void removeRequested();
     void addRequested();
     void addFolderRequested();
+    /// 右键菜单里点了"仅转换选中的文件"
+    void convertSelectionRequested();
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;

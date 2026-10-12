@@ -106,6 +106,13 @@ ConvertSettingsPanel::ConvertSettingsPanel(QWidget *parent)
     estimateLayout->addLayout(estimateColumn, 1);
     outer->addWidget(estimateCard);
 
+    // 转换范围提示：媒体库有选中项时只转选中项，这一点必须让用户看得见
+    m_scopeLabel = new QLabel(this);
+    m_scopeLabel->setProperty("role", "hint");
+    m_scopeLabel->setWordWrap(true);
+    m_scopeLabel->setText(QStringLiteral("媒体库为空，先导入文件"));
+    outer->addWidget(m_scopeLabel);
+
     m_startButton = new QPushButton(QStringLiteral("开始转换"), this);
     m_startButton->setProperty("accent", true);
     m_startButton->setIcon(icons::icon(icons::Glyph::PlayCircle,
@@ -406,6 +413,27 @@ SectionCard *ConvertSettingsPanel::buildAdvancedGroup()
     m_hardwareHint = hintLabel(QStringLiteral("正在检测硬件编码能力…"), group);
     layout->addWidget(m_hardwareHint);
 
+    // ---- 字幕：不做"静默丢弃" ----
+    auto *subtitleForm = new QFormLayout;
+    subtitleForm->setContentsMargins(0, 0, 0, 0);
+    subtitleForm->setSpacing(6);
+    m_subtitleCombo = new QComboBox(group);
+    m_subtitleCombo->addItem(QStringLiteral("丢弃字幕（默认）"), QStringLiteral("drop"));
+    m_subtitleCombo->addItem(QStringLiteral("保留原字幕轨"), QStringLiteral("copy"));
+    tuneCombo(m_subtitleCombo);
+    m_subtitleCombo->setToolTip(
+        QStringLiteral("保留字幕：MKV 直接复制原字幕（零损失），MP4/MOV 会转成内嵌字幕。\n"
+                       "注意：转换器不会把字幕烧进画面，只是把字幕轨一起带进输出文件"));
+    connect(m_subtitleCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        updateSubtitleAvailability();
+        refreshEstimate();
+    });
+    subtitleForm->addRow(QStringLiteral("字幕"), m_subtitleCombo);
+    layout->addLayout(subtitleForm);
+
+    m_subtitleHint = hintLabel(QString(), group);
+    layout->addWidget(m_subtitleHint);
+
     m_fastStartCheck = new QCheckBox(QStringLiteral("优化网络播放"), group);
     m_fastStartCheck->setChecked(true);
     m_fastStartCheck->setToolTip(QStringLiteral("把 MP4 的索引信息（moov）放到文件开头，\n"
@@ -434,7 +462,38 @@ void ConvertSettingsPanel::setMediaInfo(const MediaInfo &info)
         if (m_trimEndSpin->value() <= 0.0 || m_trimEndSpin->value() > info.durationSeconds)
             m_trimEndSpin->setValue(info.durationSeconds);
     }
+    updateSubtitleAvailability();
     refreshEstimate();
+}
+
+void ConvertSettingsPanel::updateSubtitleAvailability()
+{
+    if (!m_subtitleHint || !m_subtitleCombo)
+        return;
+
+    const int subtitleCount = m_info.ok ? m_info.subtitles.size() : 0;
+    const bool keeping = m_subtitleCombo->currentData().toString() == QLatin1String("copy");
+    const bool containerOk = m_preset.subtitleCapable;
+
+    if (subtitleCount == 0) {
+        m_subtitleHint->setText(QStringLiteral("源文件没有字幕轨，此项无影响"));
+        m_subtitleCombo->setEnabled(false);
+        return;
+    }
+
+    m_subtitleCombo->setEnabled(containerOk);
+    if (!containerOk) {
+        m_subtitleHint->setText(
+            QStringLiteral("源文件有 %1 条字幕轨，但「%2」这种容器放不下字幕，只能丢弃")
+                .arg(subtitleCount).arg(m_preset.displayName));
+    } else if (keeping) {
+        m_subtitleHint->setText(
+            QStringLiteral("将保留 %1 条字幕轨（不会烧进画面，只是随文件一起输出）").arg(subtitleCount));
+    } else {
+        m_subtitleHint->setText(
+            QStringLiteral("⚠ 源文件有 %1 条字幕轨，当前设置会**丢弃**它们；需要的话把上面的字幕改成“保留原字幕轨”")
+                .arg(subtitleCount));
+    }
 }
 
 void ConvertSettingsPanel::clearMedia()
@@ -513,6 +572,29 @@ void ConvertSettingsPanel::setBusy(bool busy)
     m_stopButton->setEnabled(busy);
 }
 
+void ConvertSettingsPanel::setConversionScope(int fileCount, bool fromSelection)
+{
+    if (!m_scopeLabel)
+        return;
+
+    if (fileCount <= 0) {
+        m_scopeLabel->setText(QStringLiteral("媒体库为空，先导入文件"));
+        m_startButton->setToolTip(QStringLiteral("请先添加文件"));
+        return;
+    }
+
+    if (fromSelection) {
+        m_scopeLabel->setText(
+            QStringLiteral("将转换媒体库中选中的 %1 个文件（取消选中则转换全部）").arg(fileCount));
+        m_startButton->setToolTip(
+            QStringLiteral("把选中的 %1 个文件加入转换队列（F5）").arg(fileCount));
+    } else {
+        m_scopeLabel->setText(QStringLiteral("将转换媒体库中的全部 %1 个文件").arg(fileCount));
+        m_startButton->setToolTip(
+            QStringLiteral("把媒体库里的全部 %1 个文件加入转换队列（F5）").arg(fileCount));
+    }
+}
+
 ConvertPreset ConvertSettingsPanel::currentPreset() const
 {
     return presetById(m_presetCombo->currentData().toString());
@@ -530,6 +612,23 @@ bool ConvertSettingsPanel::setPresetById(const QString &presetId)
         return false;
     m_presetCombo->setCurrentIndex(index);
     return true;
+}
+
+bool ConvertSettingsPanel::setSubtitleMode(const QString &mode)
+{
+    if (!m_subtitleCombo)
+        return false;
+    const int index = m_subtitleCombo->findData(mode);
+    if (index < 0)
+        return false;
+    m_subtitleCombo->setCurrentIndex(index);
+    return true;
+}
+
+QString ConvertSettingsPanel::subtitleMode() const
+{
+    return m_subtitleCombo ? m_subtitleCombo->currentData().toString()
+                           : QStringLiteral("drop");
 }
 
 ConvertOptions ConvertSettingsPanel::currentOptions() const
@@ -560,6 +659,8 @@ ConvertOptions ConvertSettingsPanel::currentOptions() const
 
     options.hardwareAccel = m_hardwareCheck->isChecked() && m_hardwareCheck->isEnabled();
     options.accel = selectedAccel();
+    options.subtitleMode = m_subtitleCombo ? m_subtitleCombo->currentData().toString()
+                                           : QStringLiteral("drop");
     options.fastStart = m_fastStartCheck->isChecked();
     options.stripMetadata = m_stripMetadataCheck->isChecked();
     options.extraArguments = m_extraArgsEdit->text();
@@ -627,6 +728,7 @@ void ConvertSettingsPanel::onPresetChanged()
     }
 
     updateEnabledStates();
+    updateSubtitleAvailability();
     refreshEstimate();
 }
 

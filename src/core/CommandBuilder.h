@@ -48,7 +48,10 @@ struct ConvertOptions
     bool fastStart = true;          ///< MP4/MOV：moov 前置，便于网络播放
     bool overwrite = true;
     bool stripMetadata = false;     ///< -map_metadata -1
-    QString subtitleMode;           ///< "none" / "copy"（默认 copy，仅 mkv/mp4 支持）
+    /// 字幕处理策略：
+    ///   "drop" —— 丢弃（默认，与旧行为一致，但界面会明确提示）
+    ///   "copy" —— 保留原字幕轨（mp4/mov 转成 mov_text，mkv 直接复制）
+    QString subtitleMode = QStringLiteral("drop");
     QString extraArguments;         ///< 高级：用户手动追加的参数
 
     /// 实际输出时长（秒），用于进度与体积估算

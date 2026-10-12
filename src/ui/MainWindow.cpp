@@ -5,6 +5,7 @@
 #include "core/Format.h"
 #include "core/MediaProbe.h"
 #include "core/ProcessUtil.h"
+#include "core/SizeEstimator.h"
 #include "core/ThumbnailService.h"
 #include "job/ConvertJob.h"
 #include "job/JobQueue.h"
@@ -49,6 +50,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QStorageInfo>
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <QToolBar>
@@ -524,6 +526,7 @@ void MainWindow::connectSignals()
     connect(m_library, &MediaLibraryPanel::addRequested, this, &MainWindow::onAddFiles);
     connect(m_library, &MediaLibraryPanel::addFolderRequested, this, &MainWindow::onAddFolder);
     connect(m_library, &MediaLibraryPanel::removeRequested, this, [this]() {
+        updateConversionScope();
         if (m_library->count() == 0) {
             m_preview->clearMedia();
             m_settings->clearMedia();
@@ -537,8 +540,15 @@ void MainWindow::connectSignals()
             if (!m_infoCache.contains(path))
                 probeFile(path);
         }
+        updateConversionScope();
     });
     connect(m_library, &MediaLibraryPanel::currentChanged, this, &MainWindow::onCurrentMediaChanged);
+    connect(m_library, &MediaLibraryPanel::selectionChanged, this, &MainWindow::updateConversionScope);
+    connect(m_library, &MediaLibraryPanel::convertSelectionRequested, this, [this]() {
+        // 右键"仅转换选中的文件"：确保确实有选中项再开始
+        if (m_library->selectionCount() > 0)
+            onStartConversion();
+    });
 
     // ---- 探测 ----
     connect(m_probe, &MediaProbe::probed, this, &MainWindow::onMediaProbed);
@@ -613,6 +623,7 @@ void MainWindow::connectSignals()
         m_preview->clearMedia();
         m_settings->clearMedia();
         m_currentFile.clear();
+        updateConversionScope();
     });
     connect(m_startAction, &QAction::triggered, this, &MainWindow::onStartConversion);
     connect(m_pauseAction, &QAction::triggered, this, &MainWindow::onPauseAll);
@@ -833,46 +844,114 @@ void MainWindow::onFilmstripReady(const QString &filePath, const QList<QImage> &
 // ---------------------------------------------------------------------------
 //  转换流程
 // ---------------------------------------------------------------------------
+void MainWindow::updateConversionScope()
+{
+    const int selected = m_library->selectionCount();
+    const int total = m_library->count();
+    if (selected > 0)
+        m_settings->setConversionScope(selected, true);
+    else
+        m_settings->setConversionScope(total, false);
+}
+
+bool MainWindow::confirmDiskSpace(const QHash<QString, qint64> &volumeEstimates, int fileCount)
+{
+    QStringList shortages;
+    for (auto it = volumeEstimates.constBegin(); it != volumeEstimates.constEnd(); ++it) {
+        const QString volume = it.key();
+        if (volume == QLatin1String("?"))
+            continue;
+
+        QStorageInfo storage(volume);
+        if (!storage.isValid() || !storage.isReady())
+            continue;   // 读不出剩余空间就不拦，交给 ffmpeg 自己报错
+
+        const FreeSpaceVerdict verdict =
+            SizeEstimator::evaluateFreeSpace(it.value(), storage.bytesAvailable());
+        if (verdict.enough)
+            continue;
+
+        shortages << QStringLiteral("· %1\n    预计需要 %2，当前可用 %3，还差 %4")
+                         .arg(QDir::toNativeSeparators(volume),
+                              fmt::size(verdict.requiredBytes),
+                              fmt::size(verdict.freeBytes),
+                              fmt::size(verdict.missingBytes));
+    }
+
+    if (shortages.isEmpty())
+        return true;
+
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("磁盘空间不足"));
+    box.setIcon(QMessageBox::Critical);
+    box.setText(QStringLiteral("目标磁盘空间不足，已阻止本次转换。"));
+    box.setInformativeText(
+        QStringLiteral("共 %1 个文件待转换，但以下磁盘放不下：\n\n%2\n\n"
+                       "建议：清理磁盘，或在右侧把输出目录改到其它盘，或减少一次转换的文件数量。")
+            .arg(fileCount)
+            .arg(shortages.join(QStringLiteral("\n\n"))));
+    box.addButton(QStringLiteral("知道了"), QMessageBox::AcceptRole);
+    box.exec();
+
+    m_log->appendSystemMessage(QStringLiteral("⚠ 磁盘空间不足，已阻止转换：\n%1")
+                                   .arg(shortages.join(QLatin1Char('\n'))));
+    return false;
+}
+
 void MainWindow::onStartConversion()
 {
     if (!m_locator->tools().valid()) {
         QMessageBox::warning(this, QStringLiteral("缺少 ffmpeg"),
                              m_locator->failureReason()
-                                 + QStringLiteral("\n\n点击“确定”后可手动选择 ffmpeg.exe。"));
+                                 + QStringLiteral("\n\n点击“确定”后可手动选择或自动下载 ffmpeg。"));
         onChooseFfmpeg();
         return;
     }
 
-    QStringList files = m_library->mediaPaths();
+    // 有选中项就只转选中项，否则转整个媒体库
+    QStringList files = m_library->selectedPaths();
+    const bool fromSelection = !files.isEmpty();
+    if (!fromSelection)
+        files = m_library->mediaPaths();
+
     if (files.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("还没有文件"),
                                  QStringLiteral("请先把视频文件拖进窗口，或点击“添加文件”。"));
         return;
     }
 
-    // 批量的主场景是"整个媒体库"，但把当前选中的文件排在第一个，符合用户预期
+    // 把当前预览的文件排在第一个，符合用户预期
     if (!m_library->currentPath().isEmpty()) {
         const QString current = m_library->currentPath();
-        files.removeAll(current);
-        files.prepend(current);
+        if (files.removeAll(current) > 0)
+            files.prepend(current);
     }
 
     const ConvertPreset preset = m_settings->currentPreset();
     const ConvertOptions baseOptions = m_settings->currentOptions();
     const bool sameAsSource = m_settings->outputDirectory().isEmpty();
+    const QString outputDirectory = sameAsSource ? QString() : m_settings->outputDirectory();
 
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    int queued = 0;
+    // ---------------------------------------------------------------- 第一遍：预检
+    // 在真正排队之前，把"不可能完成的任务"和"磁盘不够"都拦下来。
+    struct Prepared {
+        MediaInfo info;
+        ConvertOptions options;
+    };
+    QList<Prepared> prepared;
     int skipped = 0;
     QStringList problems;
+    qint64 estimatedBytes = 0;
+    QHash<QString, qint64> volumeEstimates;   ///< 每个磁盘卷预计要写入多少字节
 
+    QApplication::setOverrideCursor(Qt::WaitCursor);
     for (const QString &filePath : files) {
         MediaInfo info = m_infoCache.value(filePath);
         if (!info.ok) {
             // 还没探测过（或探测失败）：同步补一次，保证任务参数正确
             info = MediaProbe::probeSync(m_locator->tools().ffprobePath, filePath);
             if (info.ok) {
-                m_infoCache.insert(filePath, info);
+                m_infoCache.insert(info.filePath, info);
                 m_library->updateItemDetails(filePath, info.summaryLine());
             }
         }
@@ -887,11 +966,10 @@ void MainWindow::onStartConversion()
         }
 
         ConvertOptions options = baseOptions;
-        const QString outputDirectory = sameAsSource ? QString() : m_settings->outputDirectory();
         options.outputPath = CommandBuilder::defaultOutputPath(filePath, preset.extension,
                                                               outputDirectory);
 
-        // 先"预检"一遍命令行：像"用视频预设转换纯音频文件"这种根本不可能完成的任务，
+        // 预检命令行：像"用视频预设转换纯音频文件"这种根本不可能完成的任务，
         // 在这里就拦下来并给出人话解释，而不是塞进队列再失败。
         const CommandPlan plan = CommandBuilder::build(m_locator->tools().ffmpegPath,
                                                        info, preset, options);
@@ -902,11 +980,38 @@ void MainWindow::onStartConversion()
             continue;
         }
 
-        const QString jobId = m_queue->enqueue(info, preset, options);
+        const SizeEstimate estimate = SizeEstimator::estimate(info, preset, options);
+        estimatedBytes += estimate.bytes;
+        if (estimate.bytes > 0) {
+            const QString volume = QStorageInfo(QFileInfo(options.outputPath).absolutePath())
+                                       .rootPath();
+            volumeEstimates[volume.isEmpty() ? QStringLiteral("?") : volume] += estimate.bytes;
+        }
+        prepared.append({info, options});
+    }
+    QApplication::restoreOverrideCursor();
+
+    if (prepared.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("没有可转换的任务"),
+                             problems.isEmpty()
+                                 ? QStringLiteral("没有可转换的文件。")
+                                 : problems.join(QLatin1Char('\n')));
+        return;
+    }
+
+    // ---------------------------------------------------------------- 磁盘空间预检
+    // 预估体积已经算出来了，就别等转一半才发现磁盘满了。
+    if (!confirmDiskSpace(volumeEstimates, prepared.size()))
+        return;
+
+    // ---------------------------------------------------------------- 第二遍：入队
+    int queued = 0;
+    for (const Prepared &item : prepared) {
+        const QString jobId = m_queue->enqueue(item.info, preset, item.options);
         if (ConvertJob *job = m_queue->job(jobId)) {
             for (const QString &warning : job->warnings())
                 m_log->appendSystemMessage(QStringLiteral("%1：%2")
-                                               .arg(QFileInfo(filePath).fileName(), warning));
+                                               .arg(QFileInfo(item.info.filePath).fileName(), warning));
             ++queued;
         }
     }
@@ -944,6 +1049,18 @@ void MainWindow::triggerConversionForTest()
 bool MainWindow::setPresetForTest(const QString &presetId)
 {
     return m_settings->setPresetById(presetId);
+}
+
+bool MainWindow::setSubtitleModeForTest(const QString &mode)
+{
+    return m_settings->setSubtitleMode(mode);
+}
+
+int MainWindow::selectForTest(const QString &substring)
+{
+    const int matched = m_library->selectMatching(substring);
+    updateConversionScope();
+    return matched;
 }
 
 QString MainWindow::layoutDiagnostics() const
@@ -1027,9 +1144,13 @@ void MainWindow::onJobFinished(vf::ConvertJob *job, vf::JobState state)
 {
     m_jobs->updateJob(job);
     if (state == JobState::Completed) {
-        m_log->appendSystemMessage(QStringLiteral("✅ 完成：%1 → %2")
+        const QString verified = job->verification().summary;
+        m_log->appendSystemMessage(QStringLiteral("✅ 完成：%1 → %2%3")
                                        .arg(QFileInfo(job->mediaInfo().filePath).fileName(),
-                                            QDir::toNativeSeparators(job->outputPath())));
+                                            QDir::toNativeSeparators(job->outputPath()),
+                                            verified.isEmpty()
+                                                ? QString()
+                                                : QStringLiteral("\n    已校验产物：%1").arg(verified)));
     } else if (state == JobState::Failed) {
         m_log->appendSystemMessage(QStringLiteral("❌ 失败：%1\n%2")
                                        .arg(QFileInfo(job->mediaInfo().filePath).fileName(),

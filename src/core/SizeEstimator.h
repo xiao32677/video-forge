@@ -23,6 +23,15 @@ struct SizeEstimate
     QString comparison;         ///< 与源文件的对比，例如"约为原文件的 62%"
 };
 
+/// 磁盘空间判定结果
+struct FreeSpaceVerdict
+{
+    bool enough = true;
+    qint64 requiredBytes = 0;   ///< 带安全余量后的需求量
+    qint64 freeBytes = 0;
+    qint64 missingBytes = 0;    ///< 还差多少（enough 为 true 时是 0）
+};
+
 class SizeEstimator
 {
 public:
@@ -33,6 +42,13 @@ public:
 
     /// 人类可读的一行描述（可直接放到界面上）
     static QString describe(const SizeEstimate &estimate);
+
+    /// 判断"剩余空间够不够"。
+    /// 估算本身有误差（CRF 模式是经验模型），所以额外留一个安全系数；
+    /// 但报给用户的差额是净差额，不虚报。
+    /// 抽成纯函数是为了能确定性测试——真去把磁盘写满显然不现实。
+    static FreeSpaceVerdict evaluateFreeSpace(qint64 estimatedBytes, qint64 freeBytes,
+                                             double safetyFactor = 1.10);
 
 private:
     /// CRF -> 目标码率的经验模型（基于 1080p / 中低运动量画面的拟合）

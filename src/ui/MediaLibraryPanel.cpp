@@ -266,13 +266,26 @@ MediaLibraryPanel::MediaLibraryPanel(QWidget *parent)
                 if (current)
                     emit currentChanged(current->data(kPathRole).toString());
             });
+    connect(m_list, &QListWidget::itemSelectionChanged, this, [this]() {
+        refreshHeader();
+        emit selectionChanged();
+    });
     connect(m_list, &QListWidget::customContextMenuRequested, this, [this](const QPoint &position) {
         QListWidgetItem *item = m_list->itemAt(position);
         QMenu menu(this);
+        const int selected = selectionCount();
+        QAction *convertAction = menu.addAction(
+            selected > 0 ? QStringLiteral("仅转换选中的 %1 个文件").arg(selected)
+                         : QStringLiteral("仅转换选中的文件"));
+        convertAction->setEnabled(selected > 0);
+        menu.addSeparator();
         QAction *removeAction = menu.addAction(QStringLiteral("从列表移除"));
         QAction *clearAction = menu.addAction(QStringLiteral("清空列表"));
         QAction *chosen = menu.exec(m_list->viewport()->mapToGlobal(position));
-        if (chosen == removeAction) {
+        if (chosen == convertAction) {
+            Q_UNUSED(item);
+            emit convertSelectionRequested();
+        } else if (chosen == removeAction) {
             Q_UNUSED(item);
             removeSelected();
         } else if (chosen == clearAction) {
@@ -344,6 +357,23 @@ QStringList MediaLibraryPanel::mediaPaths() const
     return paths;
 }
 
+QStringList MediaLibraryPanel::selectedPaths() const
+{
+    QStringList paths;
+    // 按列表顺序返回，而不是按点击顺序，结果更可预期
+    for (int i = 0; i < m_list->count(); ++i) {
+        QListWidgetItem *item = m_list->item(i);
+        if (item->isSelected())
+            paths << item->data(kPathRole).toString();
+    }
+    return paths;
+}
+
+int MediaLibraryPanel::selectionCount() const
+{
+    return m_list->selectedItems().size();
+}
+
 QString MediaLibraryPanel::currentPath() const
 {
     QListWidgetItem *item = m_list->currentItem();
@@ -393,6 +423,31 @@ void MediaLibraryPanel::selectPath(const QString &filePath)
     m_list->scrollToItem(item);
 }
 
+int MediaLibraryPanel::selectMatching(const QString &substring)
+{
+    int matched = 0;
+    m_list->clearSelection();
+    for (int i = 0; i < m_list->count(); ++i) {
+        QListWidgetItem *item = m_list->item(i);
+        const QString path = item->data(kPathRole).toString();
+        if (path.contains(substring, Qt::CaseInsensitive)) {
+            item->setSelected(true);
+            ++matched;
+        }
+    }
+    if (matched > 0 && m_list->currentItem() == nullptr)
+        m_list->setCurrentRow(0);
+    refreshHeader();
+    return matched;
+}
+
+void MediaLibraryPanel::clearSelection()
+{
+    m_list->clearSelection();
+    m_list->setCurrentItem(nullptr);
+    refreshHeader();
+}
+
 void MediaLibraryPanel::removeSelected()
 {
     const QList<QListWidgetItem *> selected = m_list->selectedItems();
@@ -410,8 +465,14 @@ void MediaLibraryPanel::clearAll()
 
 void MediaLibraryPanel::refreshHeader()
 {
-    m_header->setText(QStringLiteral("媒体库 · %1").arg(m_list->count()));
-    m_emptyHint->setVisible(m_list->count() == 0);
+    const int total = m_list->count();
+    const int selected = selectionCount();
+    // 侧栏很窄，标题必须短：选中数量用 "选 N" 表达就够了
+    if (selected > 0)
+        m_header->setText(QStringLiteral("媒体库 %1 · 选 %2").arg(total).arg(selected));
+    else
+        m_header->setText(QStringLiteral("媒体库 %1").arg(total));
+    m_emptyHint->setVisible(total == 0);
 }
 void MediaLibraryPanel::dragEnterEvent(QDragEnterEvent *event)
 {

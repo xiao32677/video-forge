@@ -61,8 +61,16 @@ public:
     bool setPresetById(const QString &presetId);
     QString currentPresetId() const;
 
+    /// 切换字幕策略："drop" / "copy"（自动化测试使用）
+    bool setSubtitleMode(const QString &mode);
+    QString subtitleMode() const;
+
     /// 批量转换进行中：禁用"开始"，启用"停止"
     void setBusy(bool busy);
+
+    /// 告诉用户"这次到底会转哪几个文件"。
+    /// 媒体库有选中项时只转选中项，否则转全部——这件事必须让用户看得见。
+    void setConversionScope(int fileCount, bool fromSelection);
 
 signals:
     void startRequested();
@@ -79,6 +87,8 @@ private:
     SectionCard *buildTrimGroup();
     SectionCard *buildAdvancedGroup();
     void updateEnabledStates();
+    /// 根据"源文件有没有字幕 + 目标容器支不支持"刷新字幕提示
+    void updateSubtitleAvailability();
 
     MediaInfo m_info;
     ConvertPreset m_preset;
@@ -113,12 +123,15 @@ private:
     SectionCard *m_advancedGroup = nullptr;
     QCheckBox *m_hardwareCheck = nullptr;
     QLabel *m_hardwareHint = nullptr;
+    QComboBox *m_subtitleCombo = nullptr;
+    QLabel *m_subtitleHint = nullptr;
     QCheckBox *m_fastStartCheck = nullptr;
     QCheckBox *m_stripMetadataCheck = nullptr;
     QLineEdit *m_extraArgsEdit = nullptr;
 
     QLabel *m_estimateLabel = nullptr;
     QLabel *m_estimateMetric = nullptr;
+    QLabel *m_scopeLabel = nullptr;
     QPushButton *m_startButton = nullptr;
     QPushButton *m_stopButton = nullptr;
 };

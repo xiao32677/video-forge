@@ -1,12 +1,17 @@
 #include "job/ConvertJob.h"
 #include "core/Format.h"
+#include "core/MediaProbe.h"
 #include "core/ProcessUtil.h"
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QStringList>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QtGlobal>
+
+#include <cmath>
 
 #ifdef Q_OS_WIN
 #  include <windows.h>
@@ -89,13 +94,15 @@ QString jobStateText(JobState state)
 
 ConvertJob::ConvertJob(const QString &jobId, const MediaInfo &info,
                        const ConvertPreset &preset, const ConvertOptions &options,
-                       const QString &ffmpegPath, QObject *parent)
+                       const QString &ffmpegPath, const QString &ffprobePath,
+                       QObject *parent)
     : QObject(parent)
     , m_jobId(jobId)
     , m_mediaInfo(info)
     , m_preset(preset)
     , m_options(options)
     , m_ffmpegPath(ffmpegPath)
+    , m_ffprobePath(ffprobePath)
 {
     m_duration = options.effectiveDuration(info.durationSeconds);
     m_plan = CommandBuilder::build(ffmpegPath, info, preset, options);
@@ -226,8 +233,10 @@ void ConvertJob::handleProcessFinished(int exitCode, QProcess::ExitStatus status
     if (exitCode == 0) {
         m_progress = 1.0;
         emit progressChanged(m_jobId, 1.0, m_lastProgress.speed, m_lastProgress.totalSize);
-        setState(JobState::Completed);
-        emit finished(m_jobId, JobState::Completed, QStringLiteral("转换完成"));
+        // 不能只信 ffmpeg 的退出码：硬件编码、切片、容器兼容问题都可能"返回 0 但产物不可用"。
+        // 用 ffprobe 复核一遍再宣布成功。
+        appendLog(QStringLiteral("ffmpeg 已退出，正在校验输出文件…"));
+        finishAfterVerification();
         return;
     }
 
@@ -245,6 +254,106 @@ void ConvertJob::handleProcessError(QProcess::ProcessError error)
         setState(JobState::Failed);
         emit finished(m_jobId, JobState::Failed, m_errorMessage);
     }
+}
+
+ConvertJob::Verification ConvertJob::verifyOutput() const
+{
+    Verification result;
+
+    const QFileInfo outputInfo(m_options.outputPath);
+    if (!outputInfo.exists()) {
+        result.problem = QStringLiteral("转换结束后没有找到输出文件：%1")
+                             .arg(QDir::toNativeSeparators(m_options.outputPath));
+        return result;
+    }
+    if (outputInfo.size() <= 0) {
+        result.problem = QStringLiteral("输出文件是空的（0 字节），转换实际没有成功。");
+        return result;
+    }
+
+    // 没有 ffprobe 就退化为"只看文件存在且非空"，但要在日志里说清楚
+    if (m_ffprobePath.isEmpty()) {
+        result.ok = true;
+        result.summary = QStringLiteral("%1（未做深度校验：未找到 ffprobe）").arg(fmt::size(outputInfo.size()));
+        return result;
+    }
+
+    const MediaInfo output = MediaProbe::probeSync(m_ffprobePath, m_options.outputPath);
+    if (!output.ok) {
+        result.problem = QStringLiteral("输出文件无法被解析，可能已损坏：%1")
+                             .arg(output.errorMessage.isEmpty() ? QStringLiteral("未知原因")
+                                                                : output.errorMessage);
+        return result;
+    }
+
+    // ---- 流类型检查：该有的流必须有 ----
+    if (!m_preset.isAudioOnly() && !output.hasVideo()) {
+        result.problem = QStringLiteral("输出文件里没有视频流，转换没有真正完成。");
+        return result;
+    }
+    if (m_preset.isAudioOnly() && !output.hasAudio()) {
+        result.problem = QStringLiteral("输出文件里没有音频流，转换没有真正完成。");
+        return result;
+    }
+    if (m_mediaInfo.hasAudio() && !m_options.removeAudio && !output.hasAudio()) {
+        result.problem = QStringLiteral("源文件有音频，但输出文件没有音频流。");
+        return result;
+    }
+
+    // ---- 时长检查：截断是最常见、也最容易被忽略的失败形态 ----
+    // GIF 的时长语义不可靠，跳过；其余情况给 3 秒或 8% 的宽容度，
+    // 避免因为容器/编码器的细微差异而误报。
+    const bool checkDuration = (m_preset.id != QLatin1String("gif"))
+        && m_duration > 1.0 && output.durationSeconds > 0.0;
+    if (checkDuration) {
+        const double tolerance = qMax(3.0, m_duration * 0.08);
+        const double delta = std::abs(output.durationSeconds - m_duration);
+        if (delta > tolerance) {
+            result.problem = QStringLiteral("输出时长 %1，预期 %2（相差 %3），文件可能被截断。")
+                                 .arg(fmt::duration(output.durationSeconds),
+                                      fmt::duration(m_duration),
+                                      fmt::duration(delta));
+            return result;
+        }
+    }
+
+    result.ok = true;
+    result.summary = QStringLiteral("%1 · %2%3")
+                         .arg(fmt::size(outputInfo.size()),
+                              output.codecSummary(),
+                              output.durationSeconds > 0
+                                  ? QStringLiteral(" · ") + fmt::duration(output.durationSeconds)
+                                  : QString());
+    return result;
+}
+
+void ConvertJob::finishAfterVerification()
+{
+    auto *watcher = new QFutureWatcher<Verification>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher]() {
+        m_verification = watcher->result();
+        watcher->deleteLater();
+
+        if (m_cancelRequested) {
+            m_errorMessage = QStringLiteral("已取消");
+            setState(JobState::Canceled);
+            emit finished(m_jobId, JobState::Canceled, m_errorMessage);
+            return;
+        }
+
+        if (m_verification.ok) {
+            appendLog(QStringLiteral("输出校验通过：%1").arg(m_verification.summary));
+            setState(JobState::Completed);
+            emit finished(m_jobId, JobState::Completed, QStringLiteral("转换完成"));
+        } else {
+            m_errorMessage = QStringLiteral("输出文件校验未通过：%1").arg(m_verification.problem);
+            appendLog(QStringLiteral("❌ %1").arg(m_errorMessage));
+            setState(JobState::Failed);
+            emit finished(m_jobId, JobState::Failed, m_errorMessage);
+        }
+    });
+
+    watcher->setFuture(QtConcurrent::run([this]() { return verifyOutput(); }));
 }
 
 void ConvertJob::cancel()
