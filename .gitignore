@@ -1,0 +1,34 @@
+# ---- 构建产物 ----
+build/
+build-*/
+dist/
+out/
+*.o
+*.obj
+*.a
+*.exe
+*.dll
+*.zip
+
+# ---- Qt Creator / IDE ----
+*.user
+*.user.*
+CMakeLists.txt.user*
+.vscode/
+.idea/
+
+# ---- 测试与截图产物（可用脚本重新生成）----
+testdata/
+shots/
+shots-*/
+tests_out.txt
+_pkgtest/
+
+# ---- 第三方二进制（体积大，用 scripts/get-ffmpeg.ps1 下载）----
+third_party/ffmpeg/
+_toolchain/
+
+# ---- 系统 ----
+Thumbs.db
+desktop.ini
+.DS_Store

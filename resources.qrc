@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file alias="assets/videoforge.ico">assets/videoforge.ico</file>
+        <file alias="assets/logo.png">assets/logo.png</file>
+    </qresource>
+</RCC>

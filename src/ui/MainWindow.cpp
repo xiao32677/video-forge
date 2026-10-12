@@ -1,0 +1,1114 @@
+#include "ui/MainWindow.h"
+
+#include "core/CommandBuilder.h"
+#include "core/ConvertPreset.h"
+#include "core/Format.h"
+#include "core/MediaProbe.h"
+#include "core/ProcessUtil.h"
+#include "core/ThumbnailService.h"
+#include "job/ConvertJob.h"
+#include "job/JobQueue.h"
+#include "ui/AppIcon.h"
+#include "ui/ConvertSettingsPanel.h"
+#include "ui/JobQueuePanel.h"
+#include "ui/LogPanel.h"
+#include "ui/MediaLibraryPanel.h"
+#include "ui/PreviewPanel.h"
+#include "ui/Theme.h"
+
+#include <QActionGroup>
+#include <QApplication>
+#include <QCheckBox>
+#include <QClipboard>
+#include <QCloseEvent>
+#include <QComboBox>
+#include <QDesktopServices>
+#include <QDir>
+#include <QDoubleSpinBox>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFutureWatcher>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMenuBar>
+#include <QMessageBox>
+#include <QMimeData>
+#include <QProgressBar>
+#include <QPushButton>
+#include <QRegularExpression>
+#include <QScrollArea>
+#include <QSettings>
+#include <QSlider>
+#include <QSpinBox>
+#include <QSplitter>
+#include <QStatusBar>
+#include <QSystemTrayIcon>
+#include <QTimer>
+#include <QToolBar>
+#include <QUrl>
+#include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrentRun>
+
+#include <algorithm>
+
+namespace vf {
+
+namespace {
+
+const char *kAppName = "VideoForge";
+const int kDefaultMaxConcurrent = 2;
+
+} // namespace
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+{
+    setWindowTitle(QStringLiteral("VideoForge · 视频格式转换器"));
+    setWindowIcon(appicon::applicationIcon());
+    setAcceptDrops(true);
+    setMinimumSize(1180, 780);
+
+    m_locator = new FfmpegLocator(this);
+    m_probe = new MediaProbe(m_locator, this);
+    m_thumbnails = new ThumbnailService(m_locator, this);
+    m_queue = new JobQueue(m_locator, this);
+    m_hwDetector = new HwAccelDetector(this);
+
+    buildCentralWidget();
+    buildActions();
+    buildMenus();
+    buildToolBar();
+    buildStatusBar();
+    buildTrayIcon();
+    connectSignals();
+    restoreSettings();
+
+    // ffmpeg 定位：启动时立刻做，并且把结果反映到状态栏
+    m_locator->locate();
+    updateFfmpegStatus();
+
+    // 硬件编码能力探测放到后台，别拖慢启动
+    if (m_locator->tools().valid()) {
+        const QString ffmpegPath = m_locator->tools().ffmpegPath;
+        auto *watcher = new QFutureWatcher<QList<HardwareCapability>>(this);
+        connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher]() {
+            const QList<HardwareCapability> capabilities = watcher->result();
+            watcher->deleteLater();
+            m_hwDetectionDone = true;
+            m_settings->setHardwareCapabilities(capabilities);
+        });
+        watcher->setFuture(QtConcurrent::run([this, ffmpegPath]() {
+            HwAccelDetector detector;
+            return detector.detect(ffmpegPath);
+        }));
+    }
+
+    m_log->appendSystemMessage(
+        m_locator->tools().valid()
+            ? QStringLiteral("已就绪。使用 ffmpeg %1（%2）")
+                  .arg(m_locator->tools().version,
+                       QDir::toNativeSeparators(m_locator->tools().ffmpegPath))
+            : QStringLiteral("⚠ %1").arg(m_locator->failureReason()));
+    m_log->appendSystemMessage(QStringLiteral("提示：把视频文件直接拖进窗口即可开始。"));
+}
+
+MainWindow::~MainWindow() = default;
+
+// ---------------------------------------------------------------------------
+//  界面搭建
+// ---------------------------------------------------------------------------
+void MainWindow::buildCentralWidget()
+{
+    auto *central = new QWidget(this);
+    auto *layout = new QVBoxLayout(central);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    m_horizontalSplitter = new QSplitter(Qt::Horizontal, central);
+    m_library = new MediaLibraryPanel(m_horizontalSplitter);
+    m_library->setMinimumWidth(240);
+    m_preview = new PreviewPanel(m_horizontalSplitter);
+    m_preview->setMinimumWidth(420);
+    m_settings = new ConvertSettingsPanel(m_horizontalSplitter);
+    m_settings->setMinimumWidth(330);
+    m_settings->setMaximumWidth(460);
+
+    m_horizontalSplitter->addWidget(m_library);
+    m_horizontalSplitter->addWidget(m_preview);
+    m_horizontalSplitter->addWidget(m_settings);
+    m_horizontalSplitter->setStretchFactor(0, 0);
+    m_horizontalSplitter->setStretchFactor(1, 1);
+    m_horizontalSplitter->setStretchFactor(2, 0);
+    m_horizontalSplitter->setSizes({280, 760, 420});
+
+    m_verticalSplitter = new QSplitter(Qt::Vertical, central);
+    m_verticalSplitter->addWidget(m_horizontalSplitter);
+
+    m_jobs = new JobQueuePanel(m_verticalSplitter);
+    m_jobs->setMinimumHeight(150);
+    m_verticalSplitter->addWidget(m_jobs);
+
+    m_log = new LogPanel(m_verticalSplitter);
+    m_verticalSplitter->addWidget(m_log);
+    m_verticalSplitter->setStretchFactor(0, 6);
+    m_verticalSplitter->setStretchFactor(1, 2);
+    m_verticalSplitter->setStretchFactor(2, 2);
+    m_verticalSplitter->setSizes({520, 180, 180});
+
+    layout->addWidget(m_verticalSplitter);
+    setCentralWidget(central);
+}
+
+void MainWindow::buildActions()
+{
+    m_addFilesAction = new QAction(QStringLiteral("添加文件…"), this);
+    m_addFilesAction->setShortcut(QKeySequence::Open);
+    m_addFilesAction->setToolTip(QStringLiteral("添加视频/音频文件（Ctrl+O）"));
+
+    m_addFolderAction = new QAction(QStringLiteral("添加文件夹…"), this);
+    m_addFolderAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+O")));
+
+    m_removeAction = new QAction(QStringLiteral("移除选中"), this);
+    m_removeAction->setShortcut(QKeySequence::Delete);
+
+    m_clearAction = new QAction(QStringLiteral("清空媒体库"), this);
+
+    m_startAction = new QAction(QStringLiteral("▶  开始转换"), this);
+    m_startAction->setShortcut(QKeySequence(QStringLiteral("F5")));
+    m_startAction->setToolTip(QStringLiteral("把媒体库中的所有文件加入转换队列（F5）"));
+
+    m_pauseAction = new QAction(QStringLiteral("暂停全部"), this);
+    m_resumeAction = new QAction(QStringLiteral("继续全部"), this);
+    m_cancelAction = new QAction(QStringLiteral("取消全部"), this);
+    m_clearFinishedAction = new QAction(QStringLiteral("清除已完成任务"), this);
+
+    m_darkThemeAction = new QAction(QStringLiteral("深色主题"), this);
+    m_darkThemeAction->setCheckable(true);
+    m_lightThemeAction = new QAction(QStringLiteral("浅色主题"), this);
+    m_lightThemeAction->setCheckable(true);
+
+    m_toggleLogAction = new QAction(QStringLiteral("显示日志面板"), this);
+    m_toggleLogAction->setCheckable(true);
+    m_toggleLogAction->setChecked(true);
+
+    m_setFfmpegAction = new QAction(QStringLiteral("设置 ffmpeg 路径…"), this);
+    m_openOutputAction = new QAction(QStringLiteral("打开输出文件所在目录"), this);
+    m_clearCacheAction = new QAction(QStringLiteral("清空缩略图缓存"), this);
+    m_aboutAction = new QAction(QStringLiteral("关于 VideoForge"), this);
+    m_aboutQtAction = new QAction(QStringLiteral("关于 Qt"), this);
+    m_quitAction = new QAction(QStringLiteral("退出"), this);
+    m_quitAction->setShortcut(QKeySequence::Quit);
+
+    // 主题互斥
+    auto *themeGroup = new QActionGroup(this);
+    themeGroup->addAction(m_darkThemeAction);
+    themeGroup->addAction(m_lightThemeAction);
+    themeGroup->setExclusive(true);
+    (theme::currentMode() == theme::Mode::Dark ? m_darkThemeAction : m_lightThemeAction)->setChecked(true);
+}
+
+void MainWindow::buildMenus()
+{
+    QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("文件(&F)"));
+    fileMenu->addAction(m_addFilesAction);
+    fileMenu->addAction(m_addFolderAction);
+    fileMenu->addSeparator();
+    fileMenu->addAction(m_removeAction);
+    fileMenu->addAction(m_clearAction);
+    fileMenu->addSeparator();
+    fileMenu->addAction(m_openOutputAction);
+    fileMenu->addSeparator();
+    fileMenu->addAction(m_quitAction);
+
+    QMenu *convertMenu = menuBar()->addMenu(QStringLiteral("转换(&C)"));
+    convertMenu->addAction(m_startAction);
+    convertMenu->addSeparator();
+    convertMenu->addAction(m_pauseAction);
+    convertMenu->addAction(m_resumeAction);
+    convertMenu->addAction(m_cancelAction);
+    convertMenu->addSeparator();
+    convertMenu->addAction(m_clearFinishedAction);
+
+    QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("视图(&V)"));
+    viewMenu->addAction(m_darkThemeAction);
+    viewMenu->addAction(m_lightThemeAction);
+    viewMenu->addSeparator();
+    viewMenu->addAction(m_toggleLogAction);
+    viewMenu->addSeparator();
+    viewMenu->addAction(m_clearCacheAction);
+
+    QMenu *helpMenu = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
+    helpMenu->addAction(m_setFfmpegAction);
+    helpMenu->addSeparator();
+    helpMenu->addAction(m_aboutAction);
+    helpMenu->addAction(m_aboutQtAction);
+
+    // 右键菜单也顺手挂上（媒体库自带的在面板内部）
+    addActions({m_addFilesAction, m_startAction});
+}
+
+void MainWindow::buildToolBar()
+{
+    auto *toolBar = addToolBar(QStringLiteral("主工具栏"));
+    toolBar->setMovable(false);
+    toolBar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    toolBar->setIconSize(QSize(18, 18));
+
+    toolBar->addAction(m_addFilesAction);
+    toolBar->addAction(m_addFolderAction);
+    toolBar->addAction(m_removeAction);
+    toolBar->addAction(m_clearAction);
+    toolBar->addSeparator();
+    toolBar->addAction(m_startAction);
+    toolBar->addAction(m_pauseAction);
+    toolBar->addAction(m_cancelAction);
+    toolBar->addSeparator();
+    toolBar->addAction(m_setFfmpegAction);
+    toolBar->addAction(m_openOutputAction);
+}
+
+void MainWindow::buildStatusBar()
+{
+    m_ffmpegStatusLabel = new QLabel(this);
+    m_ffmpegStatusLabel->setContentsMargins(8, 0, 8, 0);
+    m_ffmpegStatusLabel->setCursor(Qt::PointingHandCursor);
+    m_ffmpegStatusLabel->setToolTip(QStringLiteral("点击可手动指定 ffmpeg 路径"));
+    statusBar()->addWidget(m_ffmpegStatusLabel);
+
+    m_currentFileLabel = new QLabel(this);
+    m_currentFileLabel->setContentsMargins(8, 0, 8, 0);
+    statusBar()->addWidget(m_currentFileLabel, 1);
+
+    m_queueStatusLabel = new QLabel(this);
+    m_queueStatusLabel->setContentsMargins(8, 0, 8, 0);
+    statusBar()->addPermanentWidget(m_queueStatusLabel);
+
+    m_overallProgress = new QProgressBar(this);
+    m_overallProgress->setRange(0, 1000);
+    m_overallProgress->setValue(0);
+    m_overallProgress->setFixedWidth(220);
+    m_overallProgress->setTextVisible(true);
+    m_overallProgress->setFormat(QStringLiteral("总进度 %p%"));
+    m_overallProgress->setVisible(false);
+    statusBar()->addPermanentWidget(m_overallProgress);
+
+    connect(m_ffmpegStatusLabel, &QLabel::linkActivated, this, &MainWindow::onChooseFfmpeg);
+}
+
+void MainWindow::buildTrayIcon()
+{
+    if (!QSystemTrayIcon::isSystemTrayAvailable())
+        return;
+
+    m_tray = new QSystemTrayIcon(appicon::applicationIcon(), this);
+    m_tray->setToolTip(QStringLiteral("VideoForge · 视频格式转换器"));
+
+    auto *menu = new QMenu(this);
+    menu->addAction(QStringLiteral("显示主窗口"), this, [this]() {
+        show();
+        setWindowState(windowState() & ~Qt::WindowMinimized);
+        raise();
+        activateWindow();
+    });
+    menu->addAction(m_addFilesAction);
+    menu->addSeparator();
+    menu->addAction(m_quitAction);
+    m_tray->setContextMenu(menu);
+
+    connect(m_tray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
+        if (reason == QSystemTrayIcon::DoubleClick || reason == QSystemTrayIcon::Trigger) {
+            show();
+            setWindowState(windowState() & ~Qt::WindowMinimized);
+            raise();
+            activateWindow();
+        }
+    });
+    m_tray->show();
+}
+
+void MainWindow::connectSignals()
+{
+    // ---- 媒体库 ----
+    connect(m_library, &MediaLibraryPanel::addRequested, this, &MainWindow::onAddFiles);
+    connect(m_library, &MediaLibraryPanel::addFolderRequested, this, &MainWindow::onAddFolder);
+    connect(m_library, &MediaLibraryPanel::removeRequested, this, [this]() {
+        if (m_library->count() == 0) {
+            m_preview->clearMedia();
+            m_settings->clearMedia();
+            m_currentFile.clear();
+        }
+    });
+    connect(m_library, &MediaLibraryPanel::pathsAdded, this, [this](int count) {
+        m_log->appendSystemMessage(QStringLiteral("已添加 %1 个文件到媒体库").arg(count));
+        // 新加入的文件立刻后台探测，这样用户点开就有信息，不用等
+        for (const QString &path : m_library->mediaPaths()) {
+            if (!m_infoCache.contains(path))
+                probeFile(path);
+        }
+    });
+    connect(m_library, &MediaLibraryPanel::currentChanged, this, &MainWindow::onCurrentMediaChanged);
+
+    // ---- 探测 ----
+    connect(m_probe, &MediaProbe::probed, this, &MainWindow::onMediaProbed);
+    connect(m_probe, &MediaProbe::failed, this, &MainWindow::onMediaProbeFailed);
+
+    // ---- 缩略图 ----
+    connect(m_thumbnails, &ThumbnailService::coverReady, this, &MainWindow::onCoverReady);
+    connect(m_thumbnails, &ThumbnailService::filmstripReady, this, &MainWindow::onFilmstripReady);
+    connect(m_thumbnails, &ThumbnailService::thumbnailFailed, this,
+            [this](const QString &filePath, const QString &error) {
+                if (filePath == m_currentFile)
+                    m_preview->setHint(QStringLiteral("缩略图生成失败：%1").arg(error));
+            });
+
+    // ---- 预览 -> 裁剪 ----
+    connect(m_preview, &PreviewPanel::trimStartRequested, this, [this](double seconds) {
+        m_settings->setTrimStart(seconds);
+        statusBar()->showMessage(QStringLiteral("已把 %1 设为裁剪起点").arg(fmt::duration(seconds)), 4000);
+    });
+    connect(m_preview, &PreviewPanel::trimEndRequested, this, [this](double seconds) {
+        m_settings->setTrimEnd(seconds);
+        statusBar()->showMessage(QStringLiteral("已把 %1 设为裁剪终点").arg(fmt::duration(seconds)), 4000);
+    });
+
+    // ---- 设置面板 ----
+    connect(m_settings, &ConvertSettingsPanel::startRequested, this, &MainWindow::onStartConversion);
+    connect(m_settings, &ConvertSettingsPanel::stopRequested, this, &MainWindow::onCancelAll);
+
+    // ---- 队列 ----
+    connect(m_queue, &JobQueue::jobAdded, this, &MainWindow::onJobAdded);
+    connect(m_queue, &JobQueue::jobProgressChanged, this, [this](ConvertJob *job) {
+        m_jobs->updateJob(job);
+        if (m_overallProgress->isVisible()) {
+            const double overall = m_queue->overallProgress();
+            m_overallProgress->setValue(static_cast<int>(overall * 1000));
+            setWindowTitle(QStringLiteral("VideoForge · 转换中 %1%")
+                               .arg(static_cast<int>(overall * 100 + 0.5)));
+        }
+    });
+    connect(m_queue, &JobQueue::jobStateChanged, this, [this](ConvertJob *job) {
+        m_jobs->updateJob(job);
+        updateStatusBar();
+    });
+    connect(m_queue, &JobQueue::jobFinished, this, &MainWindow::onJobFinished);
+    connect(m_queue, &JobQueue::jobRemoved, this, [this](const QString &jobId) {
+        m_jobs->removeJob(jobId);
+        updateStatusBar();
+    });
+    connect(m_queue, &JobQueue::allFinished, this, &MainWindow::onAllJobsFinished);
+
+    connect(m_jobs, &JobQueuePanel::cancelRequested, m_queue, &JobQueue::cancelJob);
+    connect(m_jobs, &JobQueuePanel::pauseRequested, m_queue, &JobQueue::pauseJob);
+    connect(m_jobs, &JobQueuePanel::resumeRequested, m_queue, &JobQueue::resumeJob);
+    connect(m_jobs, &JobQueuePanel::retryRequested, m_queue, &JobQueue::retryJob);
+    connect(m_jobs, &JobQueuePanel::removeRequested, m_queue, &JobQueue::removeJob);
+    connect(m_jobs, &JobQueuePanel::selectionChanged, this, &MainWindow::onJobSelectionChanged);
+    connect(m_jobs, &JobQueuePanel::openOutputRequested, this, [this](const QString &jobId) {
+        if (ConvertJob *job = m_queue->job(jobId))
+            openContainingFolder(job->outputPath());
+    });
+    connect(m_jobs, &JobQueuePanel::playOutputRequested, this, [this](const QString &jobId) {
+        if (ConvertJob *job = m_queue->job(jobId))
+            QDesktopServices::openUrl(QUrl::fromLocalFile(job->outputPath()));
+    });
+
+    // ---- 动作 ----
+    connect(m_addFilesAction, &QAction::triggered, this, &MainWindow::onAddFiles);
+    connect(m_addFolderAction, &QAction::triggered, this, &MainWindow::onAddFolder);
+    connect(m_removeAction, &QAction::triggered, this, [this]() { m_library->removeSelected(); });
+    connect(m_clearAction, &QAction::triggered, this, [this]() {
+        m_library->clearAll();
+        m_preview->clearMedia();
+        m_settings->clearMedia();
+        m_currentFile.clear();
+    });
+    connect(m_startAction, &QAction::triggered, this, &MainWindow::onStartConversion);
+    connect(m_pauseAction, &QAction::triggered, this, &MainWindow::onPauseAll);
+    connect(m_resumeAction, &QAction::triggered, this, &MainWindow::onResumeAll);
+    connect(m_cancelAction, &QAction::triggered, this, &MainWindow::onCancelAll);
+    connect(m_clearFinishedAction, &QAction::triggered, this, [this]() {
+        m_queue->clearFinished();
+        m_jobs->clearFinished();
+        updateStatusBar();
+    });
+    connect(m_darkThemeAction, &QAction::triggered, this, [this]() {
+        theme::apply(*qApp, theme::Mode::Dark);
+        refreshThumbnails(m_infoCache.value(m_currentFile));
+    });
+    connect(m_lightThemeAction, &QAction::triggered, this, [this]() {
+        theme::apply(*qApp, theme::Mode::Light);
+        refreshThumbnails(m_infoCache.value(m_currentFile));
+    });
+    connect(m_toggleLogAction, &QAction::toggled, this, [this](bool visible) {
+        m_log->setVisible(visible);
+    });
+    connect(m_setFfmpegAction, &QAction::triggered, this, &MainWindow::onChooseFfmpeg);
+    connect(m_openOutputAction, &QAction::triggered, this, [this]() {
+        const QString directory = m_settings->outputDirectory();
+        if (!directory.isEmpty() && QFileInfo::exists(directory)) {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
+            return;
+        }
+        const QString current = m_library->currentPath();
+        if (!current.isEmpty()) {
+            openContainingFolder(current);
+            return;
+        }
+        QMessageBox::information(this, QStringLiteral("打开输出目录"),
+                                 QStringLiteral("还没有可打开的输出目录。先转换一个文件试试。"));
+    });
+    connect(m_clearCacheAction, &QAction::triggered, this, [this]() {
+        ThumbnailService::clearCache();
+        m_log->appendSystemMessage(QStringLiteral("缩略图缓存已清空，下次打开会重新生成。"));
+        QMessageBox::information(this, QStringLiteral("清空缓存"),
+                                 QStringLiteral("缩略图缓存已清空。"));
+    });
+    connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAbout);
+    connect(m_aboutQtAction, &QAction::triggered, qApp, &QApplication::aboutQt);
+    connect(m_quitAction, &QAction::triggered, this, [this]() {
+        m_forceQuit = true;
+        close();
+    });
+
+    // ---- 状态栏刷新 ----
+    connect(m_queue, &JobQueue::queueChanged, this, &MainWindow::updateStatusBar);
+}
+
+void MainWindow::restoreSettings()
+{
+    QSettings settings;
+    // 自动化截图/测试时用 VF_RESET_LAYOUT=1 忽略上次保存的窗口布局，保证截图可复现
+    const bool ignoreLayout = qEnvironmentVariableIsSet("VF_RESET_LAYOUT");
+
+    const QByteArray geometry = settings.value(QStringLiteral("window/geometry")).toByteArray();
+    if (!ignoreLayout && !geometry.isEmpty())
+        restoreGeometry(geometry);
+    else
+        resize(1360, 880);
+
+    const QByteArray horizontal = settings.value(QStringLiteral("window/splitterH")).toByteArray();
+    if (!ignoreLayout && !horizontal.isEmpty())
+        m_horizontalSplitter->restoreState(horizontal);
+    const QByteArray vertical = settings.value(QStringLiteral("window/splitterV")).toByteArray();
+    if (!ignoreLayout && !vertical.isEmpty())
+        m_verticalSplitter->restoreState(vertical);
+
+    m_queue->setMaxConcurrent(
+        settings.value(QStringLiteral("convert/maxConcurrent"), kDefaultMaxConcurrent).toInt());
+
+    const QString outputDir = settings.value(QStringLiteral("convert/outputDir")).toString();
+    m_settings->setOutputDirectory(outputDir);
+
+    const bool logVisible = settings.value(QStringLiteral("view/logVisible"), true).toBool();
+    m_toggleLogAction->setChecked(logVisible);
+    m_log->setVisible(logVisible);
+
+    const bool lightTheme = settings.value(QStringLiteral("view/lightTheme"), false).toBool();
+    (lightTheme ? m_lightThemeAction : m_darkThemeAction)->setChecked(true);
+}
+
+void MainWindow::saveSettings()
+{
+    QSettings settings;
+    settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
+    settings.setValue(QStringLiteral("window/splitterH"), m_horizontalSplitter->saveState());
+    settings.setValue(QStringLiteral("window/splitterV"), m_verticalSplitter->saveState());
+    settings.setValue(QStringLiteral("convert/maxConcurrent"), m_queue->maxConcurrent());
+    settings.setValue(QStringLiteral("convert/outputDir"), m_settings->outputDirectory());
+    settings.setValue(QStringLiteral("view/logVisible"), m_toggleLogAction->isChecked());
+    settings.setValue(QStringLiteral("view/lightTheme"),
+                      theme::currentMode() == theme::Mode::Light);
+}
+
+// ---------------------------------------------------------------------------
+//  文件导入与探测
+// ---------------------------------------------------------------------------
+void MainWindow::onAddFiles()
+{
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, QStringLiteral("选择要转换的视频/音频文件"), QString(), fmt::mediaFileDialogFilter());
+    if (!files.isEmpty())
+        importPaths(files);
+}
+
+void MainWindow::onAddFolder()
+{
+    const QString directory = QFileDialog::getExistingDirectory(
+        this, QStringLiteral("选择包含媒体文件的文件夹"));
+    if (!directory.isEmpty())
+        importPaths({directory});
+}
+
+void MainWindow::importPaths(const QStringList &paths)
+{
+    const int added = m_library->addPaths(paths);
+    if (added == 0) {
+        if (!paths.isEmpty()) {
+            statusBar()->showMessage(
+                QStringLiteral("没有新增文件（可能已存在，或格式不被支持）"), 6000);
+        }
+    }
+}
+
+void MainWindow::loadFile(const QString &filePath)
+{
+    importPaths({filePath});
+    m_library->selectPath(filePath);
+}
+
+void MainWindow::probeFile(const QString &filePath)
+{
+    m_probe->probeAsync(filePath);
+}
+
+void MainWindow::onCurrentMediaChanged(const QString &filePath)
+{
+    if (filePath.isEmpty() || filePath == m_currentFile)
+        return;
+    m_currentFile = filePath;
+    m_thumbnails->invalidate();
+
+    m_currentFileLabel->setText(QStringLiteral("当前：%1").arg(QFileInfo(filePath).fileName()));
+
+    if (m_infoCache.contains(filePath)) {
+        const MediaInfo info = m_infoCache.value(filePath);
+        m_preview->showMedia(info);
+        m_settings->setMediaInfo(info);
+        refreshThumbnails(info);
+        return;
+    }
+
+    // 还没有探测结果：先给个占位，再触发探测
+    MediaInfo placeholder;
+    placeholder.filePath = filePath;
+    placeholder.errorMessage = QStringLiteral("正在读取媒体信息…");
+    m_preview->showMedia(placeholder);
+    m_preview->setHint(QStringLiteral("正在读取媒体信息…"));
+    probeFile(filePath);
+}
+
+void MainWindow::onMediaProbed(const MediaInfo &info)
+{
+    m_infoCache.insert(info.filePath, info);
+    m_library->updateItemDetails(info.filePath, info.summaryLine());
+
+    if (info.filePath != m_currentFile)
+        return;
+
+    m_preview->showMedia(info);
+    m_settings->setMediaInfo(info);
+    refreshThumbnails(info);
+    emit mediaReady(info.filePath);
+}
+
+void MainWindow::onMediaProbeFailed(const QString &filePath, const QString &error)
+{
+    m_library->markFailed(filePath, error);
+    m_log->appendSystemMessage(QStringLiteral("读取失败：%1 — %2")
+                                   .arg(QFileInfo(filePath).fileName(), error));
+    if (filePath == m_currentFile)
+        m_preview->setHint(error);
+}
+
+void MainWindow::refreshThumbnails(const MediaInfo &info)
+{
+    if (!info.ok || info.filePath.isEmpty())
+        return;
+    m_preview->setFilmstrip({}, info.durationSeconds);
+    m_thumbnails->requestCover(info.filePath, info.durationSeconds);
+    m_thumbnails->requestFilmstrip(info.filePath, info.durationSeconds, 12);
+}
+
+void MainWindow::onCoverReady(const QString &filePath, const QImage &image, bool fromCache)
+{
+    Q_UNUSED(fromCache);
+    m_library->updateItemThumbnail(filePath, QPixmap::fromImage(image));
+    if (filePath == m_currentFile) {
+        m_preview->setCoverImage(image);
+        m_preview->setHint(QString());
+    }
+}
+
+void MainWindow::onFilmstripReady(const QString &filePath, const QList<QImage> &frames, double duration)
+{
+    if (filePath != m_currentFile)
+        return;
+    m_preview->setFilmstrip(frames, duration);
+}
+
+// ---------------------------------------------------------------------------
+//  转换流程
+// ---------------------------------------------------------------------------
+void MainWindow::onStartConversion()
+{
+    if (!m_locator->tools().valid()) {
+        QMessageBox::warning(this, QStringLiteral("缺少 ffmpeg"),
+                             m_locator->failureReason()
+                                 + QStringLiteral("\n\n点击“确定”后可手动选择 ffmpeg.exe。"));
+        onChooseFfmpeg();
+        return;
+    }
+
+    QStringList files = m_library->mediaPaths();
+    if (files.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("还没有文件"),
+                                 QStringLiteral("请先把视频文件拖进窗口，或点击“添加文件”。"));
+        return;
+    }
+
+    // 批量的主场景是"整个媒体库"，但把当前选中的文件排在第一个，符合用户预期
+    if (!m_library->currentPath().isEmpty()) {
+        const QString current = m_library->currentPath();
+        files.removeAll(current);
+        files.prepend(current);
+    }
+
+    const ConvertPreset preset = m_settings->currentPreset();
+    const ConvertOptions baseOptions = m_settings->currentOptions();
+    const bool sameAsSource = m_settings->outputDirectory().isEmpty();
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    int queued = 0;
+    int skipped = 0;
+    QStringList problems;
+
+    for (const QString &filePath : files) {
+        MediaInfo info = m_infoCache.value(filePath);
+        if (!info.ok) {
+            // 还没探测过（或探测失败）：同步补一次，保证任务参数正确
+            info = MediaProbe::probeSync(m_locator->tools().ffprobePath, filePath);
+            if (info.ok) {
+                m_infoCache.insert(filePath, info);
+                m_library->updateItemDetails(filePath, info.summaryLine());
+            }
+        }
+        if (!info.ok) {
+            ++skipped;
+            problems << QStringLiteral("%1：%2")
+                            .arg(QFileInfo(filePath).fileName(),
+                                 info.errorMessage.isEmpty() ? QStringLiteral("无法读取")
+                                                             : info.errorMessage);
+            m_library->markFailed(filePath, info.errorMessage);
+            continue;
+        }
+
+        ConvertOptions options = baseOptions;
+        const QString outputDirectory = sameAsSource ? QString() : m_settings->outputDirectory();
+        options.outputPath = CommandBuilder::defaultOutputPath(filePath, preset.extension,
+                                                              outputDirectory);
+
+        // 先"预检"一遍命令行：像"用视频预设转换纯音频文件"这种根本不可能完成的任务，
+        // 在这里就拦下来并给出人话解释，而不是塞进队列再失败。
+        const CommandPlan plan = CommandBuilder::build(m_locator->tools().ffmpegPath,
+                                                       info, preset, options);
+        if (!plan.valid) {
+            ++skipped;
+            problems << QStringLiteral("%1：%2")
+                            .arg(QFileInfo(filePath).fileName(), plan.errorMessage);
+            continue;
+        }
+
+        const QString jobId = m_queue->enqueue(info, preset, options);
+        if (ConvertJob *job = m_queue->job(jobId)) {
+            for (const QString &warning : job->warnings())
+                m_log->appendSystemMessage(QStringLiteral("%1：%2")
+                                               .arg(QFileInfo(filePath).fileName(), warning));
+            ++queued;
+        }
+    }
+
+    QApplication::restoreOverrideCursor();
+
+    if (queued == 0) {
+        QMessageBox::warning(this, QStringLiteral("没有可转换的任务"),
+                             problems.isEmpty()
+                                 ? QStringLiteral("没有可转换的文件。")
+                                 : problems.join(QLatin1Char('\n')));
+        return;
+    }
+
+    m_conversionRunning = true;
+    m_settings->setBusy(true);
+    m_overallProgress->setVisible(true);
+    m_overallProgress->setValue(0);
+    m_queue->startScheduling();
+
+    m_log->appendSystemMessage(QStringLiteral("已加入 %1 个转换任务（输出格式：%2）")
+                                   .arg(queued).arg(preset.displayName));
+    if (skipped > 0) {
+        m_log->appendSystemMessage(QStringLiteral("%1 个文件被跳过：\n%2")
+                                       .arg(skipped).arg(problems.join(QLatin1Char('\n'))));
+    }
+    updateStatusBar();
+}
+
+void MainWindow::triggerConversionForTest()
+{
+    onStartConversion();
+}
+
+bool MainWindow::setPresetForTest(const QString &presetId)
+{
+    return m_settings->setPresetById(presetId);
+}
+
+QString MainWindow::layoutDiagnostics() const
+{
+    struct Entry { QString name; int minimumWidth; int width; };
+    QList<Entry> entries;
+
+    const QList<QWidget *> widgets = m_settings->findChildren<QWidget *>();
+    for (QWidget *widget : widgets) {
+        if (widget->isHidden())
+            continue;
+        QString name;
+        if (auto *group = qobject_cast<QGroupBox *>(widget))
+            name = QStringLiteral("GroupBox: ") + group->title();
+        else if (auto *combo = qobject_cast<QComboBox *>(widget))
+            name = QStringLiteral("ComboBox: ") + combo->currentText().left(22);
+        else if (auto *check = qobject_cast<QCheckBox *>(widget))
+            name = QStringLiteral("CheckBox: ") + check->text().left(22);
+        else if (auto *button = qobject_cast<QPushButton *>(widget))
+            name = QStringLiteral("Button: ") + button->text();
+        else if (auto *label = qobject_cast<QLabel *>(widget))
+            name = QStringLiteral("Label: ") + label->text().left(26);
+        else if (qobject_cast<QDoubleSpinBox *>(widget))
+            name = QStringLiteral("DoubleSpinBox");
+        else if (qobject_cast<QSpinBox *>(widget))
+            name = QStringLiteral("SpinBox");
+        else if (qobject_cast<QLineEdit *>(widget))
+            name = QStringLiteral("LineEdit");
+        else if (qobject_cast<QSlider *>(widget))
+            name = QStringLiteral("Slider");
+        else
+            name = QString::fromLatin1(widget->metaObject()->className());
+        entries.append({name, widget->minimumSizeHint().width(), widget->width()});
+    }
+    std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+        return a.minimumWidth > b.minimumWidth;
+    });
+
+    QString text = QStringLiteral("设置面板宽度 = %1，最小宽度需求 = %2\n\n按最小宽度需求排序（前 15 项）：\n")
+                       .arg(m_settings->width())
+                       .arg(m_settings->minimumSizeHint().width());
+    const int count = qMin(15, entries.size());
+    for (int i = 0; i < count; ++i) {
+        const Entry &entry = entries.at(i);
+        text += QStringLiteral("  %1  min=%2  now=%3\n")
+                    .arg(entry.name, -46)
+                    .arg(entry.minimumWidth, 5)
+                    .arg(entry.width, 5);
+    }
+    return text;
+}
+
+void MainWindow::onCancelAll()
+{
+    m_queue->cancelAll();
+    m_log->appendSystemMessage(QStringLiteral("已请求取消所有正在进行的任务。"));
+}
+
+void MainWindow::onPauseAll()
+{
+    m_queue->pauseAll();
+    m_log->appendSystemMessage(QStringLiteral("已暂停所有正在进行的任务。"));
+}
+
+void MainWindow::onResumeAll()
+{
+    m_queue->resumeAll();
+    m_log->appendSystemMessage(QStringLiteral("已继续所有暂停的任务。"));
+}
+
+void MainWindow::onJobAdded(vf::ConvertJob *job)
+{
+    m_jobs->addJob(job);
+    connect(job, &ConvertJob::logAppended, this, [this](const QString &jobId, const QString &text) {
+        m_log->appendLog(jobId, text);
+    });
+    updateStatusBar();
+}
+
+void MainWindow::onJobFinished(vf::ConvertJob *job, vf::JobState state)
+{
+    m_jobs->updateJob(job);
+    if (state == JobState::Completed) {
+        m_log->appendSystemMessage(QStringLiteral("✅ 完成：%1 → %2")
+                                       .arg(QFileInfo(job->mediaInfo().filePath).fileName(),
+                                            QDir::toNativeSeparators(job->outputPath())));
+    } else if (state == JobState::Failed) {
+        m_log->appendSystemMessage(QStringLiteral("❌ 失败：%1\n%2")
+                                       .arg(QFileInfo(job->mediaInfo().filePath).fileName(),
+                                            job->errorMessage()));
+    }
+    updateStatusBar();
+    recomputeBusyState();
+}
+
+void MainWindow::onAllJobsFinished()
+{
+    m_conversionRunning = false;
+    m_settings->setBusy(false);
+    m_overallProgress->setVisible(false);
+    setWindowTitle(QStringLiteral("VideoForge · 视频格式转换器"));
+
+    const int completed = m_queue->finishedCount();
+    const int failed = m_queue->failedCount();
+
+    QString message = QStringLiteral("全部任务已结束：成功 %1 个").arg(completed);
+    if (failed > 0)
+        message += QStringLiteral("，失败 %1 个（详情见运行日志）").arg(failed);
+
+    m_log->appendSystemMessage(message);
+    statusBar()->showMessage(message, 12000);
+
+    notify(failed > 0 ? QStringLiteral("转换结束（有失败）") : QStringLiteral("转换完成"),
+           message, failed > 0);
+    updateStatusBar();
+}
+
+void MainWindow::recomputeBusyState()
+{
+    const bool busy = m_queue->isBusy();
+    m_settings->setBusy(busy);
+    m_startAction->setEnabled(!busy);
+    if (!busy) {
+        m_conversionRunning = false;
+        m_overallProgress->setVisible(false);
+        setWindowTitle(QStringLiteral("VideoForge · 视频格式转换器"));
+    }
+}
+
+void MainWindow::onJobSelectionChanged(const QString &jobId)
+{
+    if (ConvertJob *job = m_queue->job(jobId)) {
+        m_log->setCommand(jobId, job->displayCommand());
+        if (!job->errorMessage().isEmpty())
+            m_log->appendSystemMessage(QStringLiteral("%1：%2")
+                                           .arg(QFileInfo(job->mediaInfo().filePath).fileName(),
+                                                job->errorMessage()));
+    } else {
+        m_log->setCommand(QString(), QString());
+    }
+}
+
+void MainWindow::updateStatusBar()
+{
+    const int total = m_queue->count();
+    if (total == 0) {
+        m_queueStatusLabel->setText(QStringLiteral("队列为空"));
+    } else {
+        m_queueStatusLabel->setText(QStringLiteral("队列 %1 · 进行 %2 · 完成 %3 · 失败 %4")
+                                        .arg(total)
+                                        .arg(m_queue->runningCount())
+                                        .arg(m_queue->finishedCount())
+                                        .arg(m_queue->failedCount()));
+    }
+    if (m_overallProgress->isVisible())
+        m_overallProgress->setValue(static_cast<int>(m_queue->overallProgress() * 1000));
+    recomputeBusyState();
+}
+
+void MainWindow::updateFfmpegStatus()
+{
+    const FfmpegTools tools = m_locator->tools();
+    m_ffmpegStatusLabel->setTextFormat(Qt::RichText);
+    if (tools.valid()) {
+        m_ffmpegStatusLabel->setText(
+            QStringLiteral("<a href='choose' style='color:%1; text-decoration:none;'>ffmpeg %2 ✔</a>")
+                .arg(theme::successColor().name(), tools.version));
+        m_ffmpegStatusLabel->setToolTip(QStringLiteral("ffmpeg：%1\nffprobe：%2\n点击可更换")
+                                            .arg(QDir::toNativeSeparators(tools.ffmpegPath),
+                                                 QDir::toNativeSeparators(tools.ffprobePath)));
+    } else {
+        m_ffmpegStatusLabel->setText(
+            QStringLiteral("<a href='choose' style='color:%1; text-decoration:none;'>"
+                           "⚠ 未找到 ffmpeg，点击这里设置</a>")
+                .arg(theme::dangerColor().name()));
+        m_ffmpegStatusLabel->setToolTip(m_locator->failureReason());
+    }
+}
+
+void MainWindow::onChooseFfmpeg()
+{
+    const QString filter = QStringLiteral("ffmpeg 可执行文件 (ffmpeg.exe);;所有文件 (*.*)");
+    QString startDirectory;
+    if (!m_locator->tools().ffmpegPath.isEmpty())
+        startDirectory = QFileInfo(m_locator->tools().ffmpegPath).absolutePath();
+
+    const QString filePath = QFileDialog::getOpenFileName(
+        this, QStringLiteral("选择 ffmpeg.exe（同目录下需要有 ffprobe.exe）"),
+        startDirectory, filter);
+    if (filePath.isEmpty())
+        return;
+
+    if (m_locator->useExecutable(filePath)) {
+        updateFfmpegStatus();
+        m_log->appendSystemMessage(QStringLiteral("已设置 ffmpeg %1：%2")
+                                       .arg(m_locator->tools().version,
+                                            QDir::toNativeSeparators(filePath)));
+        QMessageBox::information(this, QStringLiteral("设置成功"),
+                                 QStringLiteral("已启用 ffmpeg %1\n%2")
+                                     .arg(m_locator->tools().version,
+                                          QDir::toNativeSeparators(m_locator->tools().ffmpegPath)));
+
+        // 换 ffmpeg 后重新探测硬件能力
+        const QString ffmpegPath = m_locator->tools().ffmpegPath;
+        auto *watcher = new QFutureWatcher<QList<HardwareCapability>>(this);
+        connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher]() {
+            m_settings->setHardwareCapabilities(watcher->result());
+            watcher->deleteLater();
+        });
+        watcher->setFuture(QtConcurrent::run([ffmpegPath]() {
+            HwAccelDetector detector;
+            return detector.detect(ffmpegPath);
+        }));
+    } else {
+        QMessageBox::warning(
+            this, QStringLiteral("设置失败"),
+            QStringLiteral("这个文件不能正常执行，或者同目录下找不到 ffprobe.exe。\n\n"
+                           "请选择 ffmpeg 解压包 bin 目录里的 ffmpeg.exe。"));
+    }
+}
+
+void MainWindow::onToggleTheme()
+{
+    const theme::Mode mode = theme::toggle();
+    theme::apply(*qApp, mode);
+}
+
+void MainWindow::onAbout()
+{
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("关于 VideoForge"));
+    box.setIconPixmap(appicon::logo(64));
+    box.setTextFormat(Qt::RichText);
+    box.setText(QStringLiteral(
+        "<h3>VideoForge 视频格式转换器 <span style='color:#4C8DFF'>v1.0.0</span></h3>"
+        "<p>一个用 Qt 6 + C++ 写的 Windows 桌面客户端，通过 ffmpeg 命令行完成音视频格式转换。</p>"
+        "<p><b>核心能力</b><br>"
+        "· 读取并展示完整的媒体信息与缩略图 / 胶片条<br>"
+        "· 内置常用格式预设，一键批量转换<br>"
+        "· 实时进度、速度、剩余时间与输出体积预估<br>"
+        "· 可查看并复制真正执行的 ffmpeg 命令行<br>"
+        "· 硬件加速（NVENC / QSV / AMF）自动探测</p>"
+        "<p><b>环境</b><br>Qt %1 · ffmpeg %2</p>"
+        "<p style='color:#8B939C'>开源许可：MIT</p>")
+        .arg(QString::fromLatin1(qVersion()),
+             m_locator->tools().version.isEmpty() ? QStringLiteral("未检测到")
+                                                  : m_locator->tools().version));
+    box.exec();
+}
+
+void MainWindow::notify(const QString &title, const QString &message, bool warning)
+{
+    if (m_tray && m_tray->isVisible())
+        m_tray->showMessage(title, message, warning ? QSystemTrayIcon::Warning
+                                                    : QSystemTrayIcon::Information, 6000);
+}
+
+void MainWindow::openContainingFolder(const QString &filePath)
+{
+    const QFileInfo info(filePath);
+    if (!info.exists()) {
+        // 文件可能已被移动：退而打开其所在目录
+        QDesktopServices::openUrl(QUrl::fromLocalFile(info.absolutePath()));
+        return;
+    }
+    QDesktopServices::openUrl(QUrl::fromLocalFile(info.absolutePath()));
+}
+
+bool MainWindow::isMediaReady(const QString &filePath) const
+{
+    return m_infoCache.contains(filePath) && !m_currentFile.isEmpty();
+}
+
+// ---------------------------------------------------------------------------
+//  事件
+// ---------------------------------------------------------------------------
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (event->mimeData()->hasUrls())
+        event->acceptProposedAction();
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+    QStringList paths;
+    const QList<QUrl> urls = event->mimeData()->urls();
+    for (const QUrl &url : urls) {
+        if (url.isLocalFile())
+            paths << url.toLocalFile();
+    }
+    if (!paths.isEmpty()) {
+        importPaths(paths);
+        event->acceptProposedAction();
+    }
+}
+
+void MainWindow::keyPressEvent(QKeyEvent *event)
+{
+    // Ctrl+V 粘贴文件路径：从资源管理器复制文件后直接粘贴，是客户端该有的顺手功能
+    if (event->matches(QKeySequence::Paste)) {
+        const QString text = QApplication::clipboard()->text();
+        if (!text.isEmpty()) {
+            QStringList paths;
+            const QStringList lines = text.split(QRegularExpression(QStringLiteral("[\\r\\n]+")),
+                                                Qt::SkipEmptyParts);
+            for (const QString &line : lines) {
+                const QString candidate = line.trimmed().remove(QLatin1Char('"'));
+                if (QFileInfo::exists(candidate))
+                    paths << candidate;
+            }
+            if (!paths.isEmpty()) {
+                importPaths(paths);
+                event->accept();
+                return;
+            }
+        }
+    }
+    QMainWindow::keyPressEvent(event);
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (!m_forceQuit && m_queue->isBusy()) {
+        QMessageBox box(this);
+        box.setWindowTitle(QStringLiteral("还有任务在进行"));
+        box.setIcon(QMessageBox::Question);
+        box.setText(QStringLiteral("当前还有 %1 个任务没有完成，怎么处理？")
+                        .arg(m_queue->runningCount() + m_queue->queuedCount()));
+        box.setInformativeText(QStringLiteral("继续转换：窗口隐藏到系统托盘，任务在后台跑完。\n"
+                                              "取消任务：立刻停止所有转换并退出。"));
+        QPushButton *keepRunning = box.addButton(QStringLiteral("继续转换（最小化到托盘）"),
+                                                 QMessageBox::AcceptRole);
+        QPushButton *cancelTasks = box.addButton(QStringLiteral("取消任务并退出"),
+                                                 QMessageBox::DestructiveRole);
+        box.addButton(QStringLiteral("返回"), QMessageBox::RejectRole);
+        box.exec();
+
+        if (box.clickedButton() != keepRunning && box.clickedButton() != cancelTasks) {
+            event->ignore();
+            return;
+        }
+        if (box.clickedButton() == cancelTasks) {
+            m_queue->cancelAll();
+        } else if (m_tray) {
+            hide();
+            notify(QStringLiteral("VideoForge 仍在后台转换"),
+                   QStringLiteral("双击托盘图标可重新打开窗口。"));
+            event->ignore();
+            return;
+        }
+    }
+
+    saveSettings();
+    event->accept();
+}
+
+} // namespace vf
