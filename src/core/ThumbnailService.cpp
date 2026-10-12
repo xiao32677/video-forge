@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QThreadPool>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <cmath>
@@ -18,6 +19,10 @@ namespace vf {
 namespace {
 
 constexpr int kThumbCacheVersion = 2;
+
+/// 缩略图专用线程池大小：抽帧是 IO + ffmpeg 子进程混合型任务，
+/// 3 路并行已经能吃满普通硬盘，再多只会互相拖慢。
+constexpr int kThumbnailThreads = 3;
 
 QByteArray buildCacheKeyMaterial(const QString &filePath, double timeSeconds, const QSize &size)
 {
@@ -39,6 +44,31 @@ ThumbnailService::ThumbnailService(FfmpegLocator *locator, QObject *parent)
     : QObject(parent)
     , m_locator(locator)
 {
+    m_pool = new QThreadPool(this);
+    m_pool->setMaxThreadCount(kThumbnailThreads);
+    // 线程闲置 3 秒就回收，避免一直占着资源
+    m_pool->setExpiryTimeout(3000);
+}
+
+ThumbnailService::~ThumbnailService()
+{
+    // 丢掉还没开始的任务，尽量别让退出时卡在等抽帧上
+    if (m_pool)
+        m_pool->clear();
+}
+
+QImage ThumbnailService::frameAt(const QString &filePath, double timeSeconds, const QSize &size)
+{
+    const QString key = cacheKeyFor(filePath, timeSeconds, size);
+    QImage image = loadFromCache(key);
+    if (!image.isNull())
+        return image;
+
+    const QString ffmpegPath = m_locator ? m_locator->tools().ffmpegPath : QString();
+    image = extractFrame(ffmpegPath, filePath, timeSeconds, size);
+    if (!image.isNull())
+        saveToCache(key, image);
+    return image;
 }
 
 QString ThumbnailService::cacheDirectory()
@@ -215,6 +245,58 @@ double ThumbnailService::pickCoverTimestamp(const QString &ffmpegPath, const QSt
 void ThumbnailService::invalidate()
 {
     m_generation.fetch_add(1);
+    m_filmstrip.reset();
+}
+
+void ThumbnailService::requestFilmstrip(const QString &filePath, double durationSeconds, int frames,
+                                        const QSize &frameSize)
+{
+    if (frames <= 0)
+        return;
+
+    const quint64 generation = m_generation.load();
+
+    // 并行抽帧：以前是在一个后台任务里 for 循环抽 12 帧（串行启动 12 个 ffmpeg 进程），
+    // 现在改成 12 个独立任务丢进缩略图线程池，3 路并行，首屏大约快 3 倍。
+    auto state = QSharedPointer<FilmstripState>::create();
+    state->filePath = filePath;
+    state->duration = durationSeconds;
+    state->expected = frames;
+    state->generation = generation;
+    state->frames.resize(frames);
+    m_filmstrip = state;
+
+    for (int i = 0; i < frames; ++i) {
+        const double duration = durationSeconds > 0 ? durationSeconds : static_cast<double>(frames);
+        // 均匀分布，且两侧各留 2% 余量避免抓到纯黑首尾帧
+        const double time = duration * (0.02 + 0.96 * (static_cast<double>(i) + 0.5) / frames);
+
+        auto *watcher = new QFutureWatcher<QImage>(this);
+        connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, state, i]() {
+            const QImage image = watcher->result();
+            watcher->deleteLater();
+
+            if (state != m_filmstrip)
+                return;   // 已经被更新的请求取代
+            state->frames[i] = image;   // 允许个别帧为空（占位），保证索引与时间轴对齐
+            ++state->received;
+            if (state->received < state->expected)
+                return;
+            if (state->generation != m_generation.load())
+                return;
+
+            const QList<QImage> result = state->frames;
+            m_filmstrip.reset();
+            if (result.isEmpty())
+                emit thumbnailFailed(state->filePath, QStringLiteral("无法生成胶片条"));
+            else
+                emit filmstripReady(state->filePath, result, state->duration);
+        });
+
+        watcher->setFuture(QtConcurrent::run(m_pool, [this, filePath, time, frameSize]() {
+            return frameAt(filePath, time, frameSize);
+        }));
+    }
 }
 
 void ThumbnailService::requestCover(const QString &filePath, double durationSeconds, const QSize &size)
@@ -224,8 +306,7 @@ void ThumbnailService::requestCover(const QString &filePath, double durationSeco
 
     // 先用 18% 处作为"快速封面"：命中缓存就立即出图，体验最好
     const double quickTime = durationSeconds > 0 ? durationSeconds * 0.18 : 1.0;
-    const QString quickKey = cacheKeyFor(filePath, quickTime, size);
-    const QImage cached = loadFromCache(quickKey);
+    const QImage cached = loadFromCache(cacheKeyFor(filePath, quickTime, size));
     if (!cached.isNull()) {
         emit coverReady(filePath, cached, true);
         return;
@@ -243,7 +324,7 @@ void ThumbnailService::requestCover(const QString &filePath, double durationSeco
             emit coverReady(filePath, image, false);
     });
 
-    watcher->setFuture(QtConcurrent::run([this, ffmpegPath, filePath, durationSeconds, size, generation]() {
+    watcher->setFuture(QtConcurrent::run(m_pool, [this, ffmpegPath, filePath, durationSeconds, size, generation]() {
         const double t = pickCoverTimestamp(ffmpegPath, filePath, durationSeconds);
         QString error;
         QImage image = extractFrame(ffmpegPath, filePath, t, size, &error);
@@ -255,48 +336,6 @@ void ThumbnailService::requestCover(const QString &filePath, double durationSeco
         if (!image.isNull() && generation == m_generation.load())
             saveToCache(cacheKeyFor(filePath, t, size), image);
         return image;
-    }));
-}
-
-void ThumbnailService::requestFilmstrip(const QString &filePath, double durationSeconds, int frames,
-                                        const QSize &frameSize)
-{
-    if (frames <= 0)
-        return;
-    const quint64 generation = m_generation.load();
-    const QString ffmpegPath = m_locator ? m_locator->tools().ffmpegPath : QString();
-
-    auto *watcher = new QFutureWatcher<QList<QImage>>(this);
-    connect(watcher, &QFutureWatcherBase::finished, this,
-            [this, watcher, filePath, durationSeconds, generation]() {
-                const QList<QImage> images = watcher->result();
-                watcher->deleteLater();
-                if (generation != m_generation.load())
-                    return;
-                if (images.isEmpty())
-                    emit thumbnailFailed(filePath, QStringLiteral("无法生成胶片条"));
-                else
-                    emit filmstripReady(filePath, images, durationSeconds);
-            });
-
-    watcher->setFuture(QtConcurrent::run([this, ffmpegPath, filePath, durationSeconds, frames, frameSize, generation]() {
-        QList<QImage> result;
-        const double duration = durationSeconds > 0 ? durationSeconds : static_cast<double>(frames);
-        for (int i = 0; i < frames; ++i) {
-            if (generation != m_generation.load())
-                return QList<QImage>();
-            // 均匀分布，且两侧各留 2% 余量避免抓到纯黑首尾帧
-            const double t = duration * (0.02 + 0.96 * (static_cast<double>(i) + 0.5) / frames);
-            const QString key = cacheKeyFor(filePath, t, frameSize);
-            QImage image = loadFromCache(key);
-            if (image.isNull()) {
-                image = extractFrame(ffmpegPath, filePath, t, frameSize);
-                if (!image.isNull())
-                    saveToCache(key, image);
-            }
-            result.append(image); // 允许个别帧为空（占位），保证索引与时间轴对齐
-        }
-        return result;
     }));
 }
 

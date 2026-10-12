@@ -260,7 +260,7 @@ JobQueuePanel::JobQueuePanel(QWidget *parent)
     m_table->horizontalHeader()->setSectionResizeMode(ColumnOutput, QHeaderView::Stretch);
     for (int column : {ColumnState, ColumnProgress, ColumnSpeed, ColumnEta})
         m_table->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
-    m_table->setMinimumHeight(140);
+    m_table->setMinimumHeight(90);
 
     layout->addWidget(m_table, 1);
 
@@ -364,6 +364,7 @@ void JobQueuePanel::addJob(ConvertJob *job)
     m_table->setItem(row, ColumnOutput, outputItem);
 
     updateJob(job);
+    recountFromTable();
     refreshSummary();
 }
 
@@ -376,6 +377,13 @@ void JobQueuePanel::updateJob(ConvertJob *job)
         return;
 
     const JobState state = job->state();
+    QTableWidgetItem *fileCell = m_table->item(row, ColumnFile);
+    const JobState previousState = fileCell
+        ? static_cast<JobState>(fileCell->data(Qt::UserRole + 3).toInt())
+        : JobState::Queued;
+
+    // 状态真的变了才调整计数并刷新统计行（进度回调时状态不变，这里就什么都不做）
+    const bool stateChanged = (previousState != state && fileCell != nullptr);
 
     if (QTableWidgetItem *item = m_table->item(row, ColumnFile)) {
         item->setData(Qt::UserRole + 3, static_cast<int>(state));
@@ -430,21 +438,40 @@ void JobQueuePanel::updateJob(ConvertJob *job)
         }
     }
 
-    m_table->viewport()->update();
-    refreshSummary();
+    // 只重绘这一行：一次进度回调不该导致整张表（可能几十行 × 6 列）重画
+    repaintRow(row);
+
+    if (stateChanged) {
+        countStateChange(previousState, true);
+        countStateChange(state, false);
+        refreshSummary();
+    }
+}
+
+void JobQueuePanel::repaintRow(int row)
+{
+    if (row < 0 || row >= m_table->rowCount())
+        return;
+    const int top = m_table->rowViewportPosition(row);
+    const int height = m_table->rowHeight(row);
+    m_table->viewport()->update(QRect(0, top, m_table->viewport()->width(), height));
 }
 
 void JobQueuePanel::removeJob(const QString &jobId)
 {
     const int row = rowForJob(jobId);
-    if (row >= 0)
+    if (row >= 0) {
+        if (QTableWidgetItem *item = m_table->item(row, ColumnFile))
+            countStateChange(static_cast<JobState>(item->data(Qt::UserRole + 3).toInt()), true);
         m_table->removeRow(row);
+    }
     refreshSummary();
 }
 
 void JobQueuePanel::clearAll()
 {
     m_table->setRowCount(0);
+    m_queuedCount = m_runningCount = m_completedCount = m_failedCount = m_canceledCount = 0;
     refreshSummary();
 }
 
@@ -455,8 +482,10 @@ void JobQueuePanel::clearFinished()
         if (!item)
             continue;
         const JobState state = static_cast<JobState>(item->data(Qt::UserRole + 3).toInt());
-        if (state == JobState::Completed || state == JobState::Failed || state == JobState::Canceled)
+        if (state == JobState::Completed || state == JobState::Failed || state == JobState::Canceled) {
+            countStateChange(state, true);
             m_table->removeRow(row);
+        }
     }
     refreshSummary();
 }
@@ -475,32 +504,43 @@ int JobQueuePanel::rowCount() const
     return m_table->rowCount();
 }
 
+/// 增量维护计数：进入某个状态就 +1，离开就 -1。
+/// 这样 refreshSummary 是 O(1)，而进度回调一秒可能触发几十次。
+void JobQueuePanel::countStateChange(JobState state, bool leaving)
+{
+    const int delta = leaving ? -1 : 1;
+    switch (state) {
+    case JobState::Queued:    m_queuedCount += delta; break;
+    case JobState::Running:   m_runningCount += delta; break;
+    case JobState::Paused:    m_runningCount += delta; break;   // 暂停仍算"进行中"
+    case JobState::Completed: m_completedCount += delta; break;
+    case JobState::Failed:    m_failedCount += delta; break;
+    case JobState::Canceled:  m_canceledCount += delta; break;
+    }
+}
+
+void JobQueuePanel::recountFromTable()
+{
+    m_queuedCount = m_runningCount = m_completedCount = m_failedCount = m_canceledCount = 0;
+    for (int row = 0; row < m_table->rowCount(); ++row) {
+        if (QTableWidgetItem *item = m_table->item(row, ColumnFile))
+            countStateChange(static_cast<JobState>(item->data(Qt::UserRole + 3).toInt()), false);
+    }
+}
+
 void JobQueuePanel::refreshSummary()
 {
-    int completed = 0;
-    int failed = 0;
-    int running = 0;
-    for (int row = 0; row < m_table->rowCount(); ++row) {
-        QTableWidgetItem *item = m_table->item(row, ColumnFile);
-        if (!item)
-            continue;
-        const JobState state = static_cast<JobState>(item->data(Qt::UserRole + 3).toInt());
-        if (state == JobState::Completed)
-            ++completed;
-        else if (state == JobState::Failed)
-            ++failed;
-        else if (state == JobState::Running)
-            ++running;
-    }
-
     if (m_table->rowCount() == 0) {
         m_summary->setText(QStringLiteral("暂无任务"));
         m_clearFinishedButton->setEnabled(false);
         return;
     }
     m_summary->setText(QStringLiteral("共 %1 个任务 · 进行中 %2 · 已完成 %3 · 失败 %4")
-                           .arg(m_table->rowCount()).arg(running).arg(completed).arg(failed));
-    m_clearFinishedButton->setEnabled(completed + failed > 0);
+                           .arg(m_table->rowCount())
+                           .arg(m_runningCount)
+                           .arg(m_completedCount)
+                           .arg(m_failedCount));
+    m_clearFinishedButton->setEnabled(m_completedCount + m_failedCount + m_canceledCount > 0);
 }
 
 } // namespace vf

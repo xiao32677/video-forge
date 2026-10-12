@@ -33,7 +33,7 @@ QSize FilmstripWidget::sizeHint() const
 
 QSize FilmstripWidget::minimumSizeHint() const
 {
-    return QSize(240, kHeight);
+    return QSize(240, 44);   // 小屏下允许压得更矮，绘制仍按实际高度自适应
 }
 
 int FilmstripWidget::visibleFrameCount() const

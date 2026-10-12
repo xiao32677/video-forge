@@ -58,12 +58,17 @@ int main(int argc, char *argv[])
         QStringLiteral("select"),
         QStringLiteral("按文件名子串多选媒体库内容（用于验证“只转选中项”）"),
         QStringLiteral("子串"));
+    QCommandLineOption windowSizeOption(
+        QStringLiteral("window-size"),
+        QStringLiteral("指定窗口尺寸，例如 1024x680（用于验证小屏布局）"),
+        QStringLiteral("宽x高"));
     parser.addOption(themeOption);
     parser.addOption(screenshotOption);
     parser.addOption(autoConvertOption);
     parser.addOption(presetOption);
     parser.addOption(subtitleOption);
     parser.addOption(selectOption);
+    parser.addOption(windowSizeOption);
     parser.process(app);
 
     const QString themeName = parser.value(themeOption).trimmed().toLower();
@@ -91,6 +96,21 @@ int main(int argc, char *argv[])
         QDir().mkpath(screenshotDirectory);
         window.resize(1500, 1000);
     }
+
+    // 允许显式指定窗口尺寸：用来验证小屏（1366x768 / 1024x768）下的布局
+    const QString windowSize = parser.value(windowSizeOption).trimmed().toLower();
+    if (!windowSize.isEmpty()) {
+        const QStringList parts = windowSize.split(QLatin1Char('x'), Qt::SkipEmptyParts);
+        if (parts.size() == 2) {
+            bool okW = false;
+            bool okH = false;
+            const int width = parts.at(0).trimmed().toInt(&okW);
+            const int height = parts.at(1).trimmed().toInt(&okH);
+            if (okW && okH && width > 0 && height > 0)
+                window.resize(width, height);
+        }
+    }
+
     window.show();
 
     const QStringList positional = parser.positionalArguments();

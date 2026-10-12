@@ -34,6 +34,7 @@
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QGroupBox>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
@@ -44,6 +45,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScreen>
 #include <QScrollArea>
 #include <QSettings>
 #include <QSlider>
@@ -76,7 +78,8 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowTitle(QStringLiteral("VideoForge · 视频格式转换器"));
     setWindowIcon(appicon::applicationIcon());
     setAcceptDrops(true);
-    setMinimumSize(1180, 780);
+    // 1366x768 的笔记本很常见，最小尺寸必须能在这种屏上完整显示
+    setMinimumSize(1000, 680);
 
     m_locator = new FfmpegLocator(this);
     m_probe = new MediaProbe(m_locator, this);
@@ -157,11 +160,11 @@ void MainWindow::buildCentralWidget()
 
     m_horizontalSplitter = new QSplitter(Qt::Horizontal, central);
     m_library = new MediaLibraryPanel(m_horizontalSplitter);
-    m_library->setMinimumWidth(240);
+    m_library->setMinimumWidth(210);
     m_preview = new PreviewPanel(m_horizontalSplitter);
-    m_preview->setMinimumWidth(420);
+    m_preview->setMinimumWidth(340);
     m_settings = new ConvertSettingsPanel(m_horizontalSplitter);
-    m_settings->setMinimumWidth(330);
+    m_settings->setMinimumWidth(300);
     m_settings->setMaximumWidth(460);
 
     m_horizontalSplitter->addWidget(m_library);
@@ -185,7 +188,6 @@ void MainWindow::buildCentralWidget()
     m_verticalSplitter->setStretchFactor(1, 2);
     m_verticalSplitter->setStretchFactor(2, 2);
     m_verticalSplitter->setSizes({520, 180, 180});
-
     layout->addWidget(m_verticalSplitter);
     setCentralWidget(central);
 }
@@ -647,6 +649,10 @@ void MainWindow::connectSignals()
     connect(m_toggleLogAction, &QAction::toggled, this, [this](bool visible) {
         m_log->setVisible(visible);
     });
+    // 只有"用户主动触发"才标记为用户已选择；setChecked() 不会发 triggered
+    connect(m_toggleLogAction, &QAction::triggered, this, [this](bool) {
+        m_logVisibilityUserSet = true;
+    });
     connect(m_setFfmpegAction, &QAction::triggered, this, &MainWindow::onChooseFfmpeg);
     connect(m_openOutputAction, &QAction::triggered, this, [this]() {
         const QString directory = m_settings->outputDirectory();
@@ -704,12 +710,28 @@ void MainWindow::restoreSettings()
     const QString outputDir = settings.value(QStringLiteral("convert/outputDir")).toString();
     m_settings->setOutputDirectory(outputDir);
 
-    const bool logVisible = settings.value(QStringLiteral("view/logVisible"), true).toBool();
+    // 日志面板默认可见性取决于**屏幕**高度，而不是窗口高度：
+    // restoreSettings 执行时窗口还没被 resize/show，拿 height() 判断会拿到默认值。
+    // 矮屏（笔记本 768p）上"三栏 + 队列 + 日志"全展开会挤到互相重叠，
+    // 所以矮屏默认收起日志（视图菜单里随时可以打开）。
+    const QScreen *screen = QGuiApplication::primaryScreen();
+    const int screenHeight = screen ? screen->availableGeometry().height() : 1080;
+    const bool logVisibleDefault = screenHeight >= 820;
+    const bool logVisible = settings.value(QStringLiteral("view/logVisible"),
+                                           logVisibleDefault).toBool();
     m_toggleLogAction->setChecked(logVisible);
     m_log->setVisible(logVisible);
 
     const bool lightTheme = settings.value(QStringLiteral("view/lightTheme"), false).toBool();
     (lightTheme ? m_lightThemeAction : m_darkThemeAction)->setChecked(true);
+
+    // 记住上次用的预设与字幕策略：常用 HEVC 的人不该每次启动都重选一遍
+    const QString presetId = settings.value(QStringLiteral("convert/presetId")).toString();
+    if (!presetId.isEmpty() && !m_settings->setPresetById(presetId))
+        m_settings->setPresetById(defaultPresetId());
+    const QString subtitleMode = settings.value(QStringLiteral("convert/subtitleMode")).toString();
+    if (!subtitleMode.isEmpty())
+        m_settings->setSubtitleMode(subtitleMode);
 }
 
 void MainWindow::saveSettings()
@@ -723,6 +745,8 @@ void MainWindow::saveSettings()
     settings.setValue(QStringLiteral("view/logVisible"), m_toggleLogAction->isChecked());
     settings.setValue(QStringLiteral("view/lightTheme"),
                       theme::currentMode() == theme::Mode::Light);
+    settings.setValue(QStringLiteral("convert/presetId"), m_settings->currentPresetId());
+    settings.setValue(QStringLiteral("convert/subtitleMode"), m_settings->subtitleMode());
 }
 
 // ---------------------------------------------------------------------------
@@ -1099,7 +1123,11 @@ QString MainWindow::layoutDiagnostics() const
         return a.minimumWidth > b.minimumWidth;
     });
 
-    QString text = QStringLiteral("设置面板宽度 = %1，最小宽度需求 = %2\n\n按最小宽度需求排序（前 15 项）：\n")
+    QString text = QStringLiteral("窗口 %1x%2，日志面板可见=%3，用户手动切换过=%4\n"
+                                  "设置面板宽度 = %5，最小宽度需求 = %6\n\n按最小宽度需求排序（前 15 项）：\n")
+                       .arg(width()).arg(height())
+                       .arg(m_log && m_log->isVisible() ? QStringLiteral("是") : QStringLiteral("否"))
+                       .arg(m_logVisibilityUserSet ? QStringLiteral("是") : QStringLiteral("否"))
                        .arg(m_settings->width())
                        .arg(m_settings->minimumSizeHint().width());
     const int count = qMin(15, entries.size());
@@ -1346,6 +1374,39 @@ void MainWindow::keyPressEvent(QKeyEvent *event)
         }
     }
     QMainWindow::keyPressEvent(event);
+}
+
+void MainWindow::updateLogVisibilityForHeight()
+{
+    // 窗口太矮时自动收起日志面板，避免"三栏 + 队列 + 日志"被挤到互相重叠。
+    // 用两个不同阈值（收起 780 / 展开 840）形成迟滞，防止在边界上反复抖动。
+    // 用户一旦手动切换过，就不再自动干预。
+    if (m_logVisibilityUserSet || !m_log)
+        return;
+
+    const int h = height();
+    bool shouldShow = m_log->isVisible();
+    if (h < 780)
+        shouldShow = false;
+    else if (h >= 840)
+        shouldShow = true;
+
+    if (shouldShow != m_log->isVisible())
+        m_toggleLogAction->setChecked(shouldShow);
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    // 首次显示时窗口尺寸才算最终确定（resize() 在 show() 之前不一定派发 resizeEvent），
+    // 所以这里也要判一次。
+    updateLogVisibilityForHeight();
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    updateLogVisibilityForHeight();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)

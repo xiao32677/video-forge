@@ -134,7 +134,7 @@ LogPanel::LogPanel(QWidget *parent)
                    QStringLiteral("运行日志"));
     m_tabs->addTab(m_commandEdit, icons::icon(icons::Glyph::Terminal, theme::mutedText(), 14),
                    QStringLiteral("ffmpeg 命令行"));
-    m_tabs->setMinimumHeight(120);
+    m_tabs->setMinimumHeight(80);
 
     layout->addWidget(m_tabs, 1);
 }

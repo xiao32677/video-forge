@@ -10,11 +10,15 @@
 #include <QJsonValue>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSemaphore>
 #include <QtConcurrent/QtConcurrentRun>
 
 namespace vf {
 
 namespace {
+
+/// 同时运行的 ffprobe 进程上限
+constexpr int kMaxConcurrentProbes = 4;
 
 qint64 toInt64(const QJsonValue &value)
 {
@@ -282,7 +286,15 @@ void MediaProbe::probeAsync(const QString &filePath)
             emit failed(filePath, info.errorMessage.isEmpty() ? QStringLiteral("未知错误") : info.errorMessage);
     });
     watcher->setFuture(QtConcurrent::run([ffprobePath, filePath]() {
-        return probeSync(ffprobePath, filePath);
+        // 限制同时运行的 ffprobe 进程数。
+        // 直接往 QtConcurrent 里塞的话，拖入几百个文件会同时拉起十几个 ffprobe 进程，
+        // 既抢占 CPU 又把线程池占满、让缩略图抽帧排在后面。
+        // 注意：变量名不能叫 slots —— 那是 Qt 的宏。
+        static QSemaphore probeSlots(kMaxConcurrentProbes);
+        probeSlots.acquire();
+        const MediaInfo info = probeSync(ffprobePath, filePath);
+        probeSlots.release();
+        return info;
     }));
 }
 

@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QListWidgetItem>
 #include <QMenu>
@@ -419,7 +420,11 @@ void MediaLibraryPanel::selectPath(const QString &filePath)
     QListWidgetItem *item = findItem(filePath);
     if (!item)
         return;
-    m_list->setCurrentItem(item);
+    // 关键：只把这一项设为"当前项"（用于预览），**不要**顺带选中它。
+    // QListWidget::setCurrentItem() 默认会连带改变选中状态，而"选中"在本程序里
+    // 表示"只转换这些文件"——如果导入文件时自动选中第一个，用户拖 10 个进来
+    // 会变成只转 1 个。这里用 NoUpdate 明确只改当前项、不动选中集。
+    m_list->setCurrentItem(item, QItemSelectionModel::NoUpdate);
     m_list->scrollToItem(item);
 }
 
@@ -435,8 +440,10 @@ int MediaLibraryPanel::selectMatching(const QString &substring)
             ++matched;
         }
     }
-    if (matched > 0 && m_list->currentItem() == nullptr)
-        m_list->setCurrentRow(0);
+    if (matched > 0 && m_list->currentItem() == nullptr) {
+        // 这里用 setCurrentRow 是故意的：测试钩子就是要"选中"，让选中集里有人
+        m_list->setCurrentRow(0, QItemSelectionModel::SelectCurrent);
+    }
     refreshHeader();
     return matched;
 }

@@ -18,6 +18,7 @@ class QPushButton;
 namespace vf {
 
 class ConvertJob;
+enum class JobState;   // 定义在 job/ConvertJob.h，这里只需要类型名
 
 /// 进度条绘制代理
 class ProgressBarDelegate : public QStyledItemDelegate
@@ -60,10 +61,23 @@ signals:
 private:
     int rowForJob(const QString &jobId) const;
     void refreshSummary();
+    /// 只重绘某一行的可视区域。
+    /// 之前每次进度回调都 update() 整个 viewport，任务一多就明显掉帧。
+    void repaintRow(int row);
+    /// 增量计数：state 状态进入(+1)或离开(-1)
+    void countStateChange(JobState state, bool leaving);
+    void recountFromTable();
 
     QTableWidget *m_table = nullptr;
     QLabel *m_summary = nullptr;
     QPushButton *m_clearFinishedButton = nullptr;
+
+    // 增量维护的任务计数（避免每次进度回调都 O(n) 扫全表）
+    int m_queuedCount = 0;
+    int m_runningCount = 0;
+    int m_completedCount = 0;
+    int m_failedCount = 0;
+    int m_canceledCount = 0;
 };
 
 } // namespace vf

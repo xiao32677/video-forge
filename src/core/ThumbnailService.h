@@ -14,10 +14,13 @@
 #include <QImage>
 #include <QList>
 #include <QObject>
+#include <QSharedPointer>
 #include <QSize>
 #include <QString>
 
 #include <atomic>
+
+class QThreadPool;
 
 namespace vf {
 
@@ -29,6 +32,7 @@ class ThumbnailService : public QObject
 
 public:
     explicit ThumbnailService(FfmpegLocator *locator, QObject *parent = nullptr);
+    ~ThumbnailService() override;
 
     /// 请求封面帧（异步）。durationSeconds <= 0 时会退化为取第 1 秒。
     void requestCover(const QString &filePath, double durationSeconds, const QSize &size = QSize(480, 270));
@@ -64,8 +68,25 @@ private:
     QImage loadFromCache(const QString &key);
     void saveToCache(const QString &key, const QImage &image);
 
+    /// 抽一帧（先查缓存）——跑在工作线程里
+    QImage frameAt(const QString &filePath, double timeSeconds, const QSize &size);
+
     FfmpegLocator *m_locator = nullptr;
+    /// 缩略图专用线程池：不与文件探测抢全局线程池，
+    /// 拖入大量文件时缩略图不会被探测任务饿死。
+    QThreadPool *m_pool = nullptr;
     std::atomic<quint64> m_generation{0};
+
+    /// 胶片条的并行抽帧状态（所有回调都在 UI 线程，无需加锁）
+    struct FilmstripState {
+        QString filePath;
+        double duration = 0.0;
+        int expected = 0;
+        int received = 0;
+        QList<QImage> frames;
+        quint64 generation = 0;
+    };
+    QSharedPointer<FilmstripState> m_filmstrip;
 };
 
 } // namespace vf

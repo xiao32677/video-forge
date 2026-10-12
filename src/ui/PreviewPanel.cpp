@@ -140,7 +140,7 @@ PreviewPanel::PreviewPanel(QWidget *parent)
 
     m_stack = new QStackedWidget(videoCard);
     m_stack->setObjectName(QStringLiteral("videoSurface"));
-    m_stack->setMinimumHeight(220);
+    m_stack->setMinimumHeight(90);
     m_stack->setAttribute(Qt::WA_StyledBackground, true);
     m_stack->installEventFilter(this);
 
@@ -346,7 +346,7 @@ void PreviewPanel::buildInfoArea(QWidget *container)
     m_infoTabs->addTab(m_videoTable, QStringLiteral("视频流"));
     m_infoTabs->addTab(m_audioTable, QStringLiteral("音频流"));
     m_infoTabs->addTab(m_extraTable, QStringLiteral("字幕 / 章节"));
-    m_infoTabs->setMinimumHeight(200);
+    m_infoTabs->setMinimumHeight(90);
 
     layout->addWidget(m_infoTabs, 3);
 }

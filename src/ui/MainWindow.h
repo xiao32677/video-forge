@@ -76,6 +76,8 @@ protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
 private slots:
     void onAddFiles();
@@ -120,6 +122,8 @@ private:
     /// 磁盘空间预检：不够就直接拦住，并告诉用户还差多少
     bool confirmDiskSpace(const QHash<QString, qint64> &volumeEstimates, int fileCount);
     void recomputeBusyState();
+    /// 按窗口高度自动收起/展开日志面板（用户手动切换过就不再干预）
+    void updateLogVisibilityForHeight();
     void notify(const QString &title, const QString &message, bool warning = false);
     void openContainingFolder(const QString &filePath);
 
@@ -175,6 +179,8 @@ private:
     bool m_hwDetectionDone = false;
     bool m_conversionRunning = false;
     bool m_forceQuit = false;
+    /// 用户是否手动切换过日志面板（切换过就不再自动干预）
+    bool m_logVisibilityUserSet = false;
 };
 
 } // namespace vf
