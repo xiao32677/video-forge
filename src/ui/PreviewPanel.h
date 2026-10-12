@@ -66,6 +66,10 @@ signals:
     /// 有文件被载入播放器（用于外部同步时长）
     void mediaLoaded(double durationSeconds);
 
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private slots:
     void onPlayPauseClicked();
     void onStopClicked();

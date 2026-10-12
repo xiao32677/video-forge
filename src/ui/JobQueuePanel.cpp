@@ -1,7 +1,9 @@
 #include "ui/JobQueuePanel.h"
 #include "core/Format.h"
 #include "job/ConvertJob.h"
+#include "ui/Icons.h"
 #include "ui/Theme.h"
+#include "ui/UiWidgets.h"
 
 #include <QApplication>
 #include <QDesktopServices>
@@ -9,10 +11,13 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLinearGradient>
 #include <QMenu>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPushButton>
 #include <QStyle>
+#include <QStyledItemDelegate>
 #include <QTableWidget>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -88,32 +93,122 @@ void ProgressBarDelegate::paint(QPainter *painter, const QStyleOptionViewItem &o
     style->drawPrimitive(QStyle::PE_PanelItemViewItem, &backgroundOption, painter,
                          backgroundOption.widget);
 
-    const QRectF track = QRectF(option.rect).adjusted(6, option.rect.height() * 0.28,
-                                                      -6, -option.rect.height() * 0.28);
+    const QRectF track = QRectF(option.rect).adjusted(7, option.rect.height() * 0.26,
+                                                      -7, -option.rect.height() * 0.26);
     painter->setPen(Qt::NoPen);
-    painter->setBrush(theme::mutedText().darker(200));
-    painter->drawRoundedRect(track, 4, 4);
+    QColor trackColor = theme::mutedText();
+    trackColor.setAlpha(state == JobState::Queued ? 40 : 60);
+    painter->setBrush(trackColor);
+    painter->drawRoundedRect(track, track.height() / 2.0, track.height() / 2.0);
 
     if (progress > 0.001) {
         QRectF filled = track;
-        filled.setWidth(qMax(4.0, track.width() * qBound(0.0, progress, 1.0)));
-        QColor color = stateColor(state);
-        if (state == JobState::Failed || state == JobState::Canceled)
-            color = color.darker(120);
-        painter->setBrush(color);
-        painter->drawRoundedRect(filled, 4, 4);
+        filled.setWidth(qMax(track.height(), track.width() * qBound(0.0, progress, 1.0)));
+
+        QLinearGradient gradient(track.topLeft(), track.topRight());
+        if (state == JobState::Failed || state == JobState::Canceled) {
+            gradient.setColorAt(0.0, theme::dangerColor());
+            gradient.setColorAt(1.0, theme::dangerColor().darker(125));
+        } else if (state == JobState::Paused) {
+            gradient.setColorAt(0.0, theme::warningColor());
+            gradient.setColorAt(1.0, theme::warningColor().darker(120));
+        } else if (state == JobState::Completed) {
+            gradient.setColorAt(0.0, theme::successColor());
+            gradient.setColorAt(1.0, theme::successColor().darker(118));
+        } else {
+            gradient.setColorAt(0.0, theme::accent());
+            gradient.setColorAt(1.0, theme::accentAlt());
+        }
+        painter->setBrush(gradient);
+        painter->drawRoundedRect(filled, filled.height() / 2.0, filled.height() / 2.0);
     }
 
     // 百分比文字
     const QString text = QStringLiteral("%1%").arg(static_cast<int>(progress * 100.0 + 0.5));
-    painter->setPen(theme::currentMode() == theme::Mode::Dark ? QColor("#E6E8EB") : QColor("#1D2126"));
     QFont font = option.font;
-    font.setPointSizeF(qMax(7.5, font.pointSizeF() - 1.0));
+    font.setPointSizeF(qMax(7.5, font.pointSizeF() - 1.4));
+    font.setWeight(QFont::DemiBold);
     painter->setFont(font);
+    painter->setPen(theme::textColor());
     painter->drawText(option.rect, Qt::AlignCenter, text);
 
     painter->restore();
 }
+
+// ---------------------------------------------------------------------------
+//  状态胶囊代理
+// ---------------------------------------------------------------------------
+namespace {
+
+class StatePillDelegate : public QStyledItemDelegate
+{
+public:
+    explicit StatePillDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        const JobState state = static_cast<JobState>(index.data(Qt::UserRole + 3).toInt());
+        const QString text = index.data(Qt::DisplayRole).toString();
+        const QColor color = stateColor(state);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+
+        QStyleOptionViewItem backgroundOption(option);
+        initStyleOption(&backgroundOption, index);
+        backgroundOption.text.clear();
+        QStyle *style = backgroundOption.widget ? backgroundOption.widget->style()
+                                                : QApplication::style();
+        style->drawPrimitive(QStyle::PE_PanelItemViewItem, &backgroundOption, painter,
+                             backgroundOption.widget);
+
+        QFont font = option.font;
+        font.setPointSizeF(qMax(7.5, font.pointSizeF() - 1.2));
+        font.setWeight(QFont::DemiBold);
+
+        const QFontMetrics metrics(font);
+        const int textWidth = metrics.horizontalAdvance(text);
+        const int pillWidth = qMin(option.rect.width() - 10, textWidth + 22);
+        const QRectF pill(option.rect.left() + 6,
+                          option.rect.center().y() - 10,
+                          qMax(46, pillWidth), 20);
+
+        QColor fill = color;
+        fill.setAlpha(state == JobState::Queued ? 26 : 40);
+        QColor border = color;
+        border.setAlpha(state == JobState::Queued ? 60 : 120);
+
+        painter->setPen(QPen(border, 1.0));
+        painter->setBrush(fill);
+        painter->drawRoundedRect(pill, pill.height() / 2.0, pill.height() / 2.0);
+
+        // 状态圆点
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(color);
+        painter->drawEllipse(QPointF(pill.left() + 10, pill.center().y()), 3.0, 3.0);
+
+        painter->setFont(font);
+        painter->setPen(color);
+        painter->drawText(QRectF(pill.left() + 18, pill.top(),
+                                 pill.width() - 22, pill.height()),
+                          Qt::AlignVCenter | Qt::AlignLeft, text);
+
+        painter->restore();
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        QSize base = QStyledItemDelegate::sizeHint(option, index);
+        base.setWidth(qMax(base.width() + 20, 92));
+        return base;
+    }
+};
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 //  面板
@@ -126,8 +221,10 @@ JobQueuePanel::JobQueuePanel(QWidget *parent)
     layout->setSpacing(6);
 
     auto *headerRow = new QHBoxLayout;
+    headerRow->setSpacing(7);
+    headerRow->addWidget(new GlyphLabel(icons::Glyph::List, 16, QColor(), this));
     auto *title = new QLabel(QStringLiteral("转换队列"), this);
-    title->setProperty("role", "title");
+    title->setProperty("role", "panelTitle");
     headerRow->addWidget(title);
 
     m_summary = new QLabel(QStringLiteral("暂无任务"), this);
@@ -136,6 +233,7 @@ JobQueuePanel::JobQueuePanel(QWidget *parent)
     headerRow->addStretch();
 
     m_clearFinishedButton = new QPushButton(QStringLiteral("清除已完成"), this);
+    m_clearFinishedButton->setIcon(icons::icon(icons::Glyph::Check, theme::successColor(), 14));
     m_clearFinishedButton->setCursor(Qt::PointingHandCursor);
     connect(m_clearFinishedButton, &QPushButton::clicked, this, &JobQueuePanel::clearFinished);
     headerRow->addWidget(m_clearFinishedButton);
@@ -147,13 +245,16 @@ JobQueuePanel::JobQueuePanel(QWidget *parent)
                                         QStringLiteral("进度"), QStringLiteral("速度"),
                                         QStringLiteral("剩余"), QStringLiteral("输出文件")});
     m_table->verticalHeader()->setVisible(false);
+    m_table->verticalHeader()->setDefaultSectionSize(34);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setShowGrid(false);
     m_table->setAlternatingRowColors(true);
+    m_table->setFrameShape(QFrame::NoFrame);
     m_table->setContextMenuPolicy(Qt::CustomContextMenu);
     m_table->setItemDelegateForColumn(ColumnProgress, new ProgressBarDelegate(this));
+    m_table->setItemDelegateForColumn(ColumnState, new StatePillDelegate(this));
     m_table->horizontalHeader()->setHighlightSections(false);
     m_table->horizontalHeader()->setSectionResizeMode(ColumnFile, QHeaderView::Stretch);
     m_table->horizontalHeader()->setSectionResizeMode(ColumnOutput, QHeaderView::Stretch);
@@ -243,6 +344,9 @@ void JobQueuePanel::addJob(ConvertJob *job)
     fileItem->setData(kJobIdRole, job->jobId());
     fileItem->setData(Qt::UserRole + 3, static_cast<int>(job->state()));
     fileItem->setToolTip(job->mediaInfo().filePath);
+    fileItem->setIcon(icons::icon(job->mediaInfo().hasVideo() ? icons::Glyph::Film
+                                                              : icons::Glyph::Music,
+                                  theme::mutedText(), 14));
     m_table->setItem(row, ColumnFile, fileItem);
 
     m_table->setItem(row, ColumnState, makeItem(jobStateText(job->state()), job->state()));
@@ -317,10 +421,13 @@ void JobQueuePanel::updateJob(ConvertJob *job)
     }
 
     if (QTableWidgetItem *item = m_table->item(row, ColumnOutput)) {
-        if (state == JobState::Completed)
+        if (state == JobState::Completed) {
             item->setForeground(theme::successColor());
-        else
+            item->setIcon(icons::icon(icons::Glyph::Check, theme::successColor(), 13));
+        } else {
             item->setData(Qt::ForegroundRole, QVariant());
+            item->setIcon(QIcon());
+        }
     }
 
     m_table->viewport()->update();

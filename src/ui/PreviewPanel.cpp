@@ -17,7 +17,11 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QPainter>
+#include <QPainterPath>
 #include <QPushButton>
+#include <QRegion>
+#include <QResizeEvent>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStackedWidget>
@@ -135,12 +139,15 @@ PreviewPanel::PreviewPanel(QWidget *parent)
     videoLayout->setSpacing(6);
 
     m_stack = new QStackedWidget(videoCard);
+    m_stack->setObjectName(QStringLiteral("videoSurface"));
     m_stack->setMinimumHeight(220);
+    m_stack->setAttribute(Qt::WA_StyledBackground, true);
+    m_stack->installEventFilter(this);
 
     m_coverLabel = new QLabel(m_stack);
     m_coverLabel->setAlignment(Qt::AlignCenter);
     m_coverLabel->setText(QStringLiteral("从左侧拖入或添加一个视频文件"));
-    m_coverLabel->setStyleSheet(QStringLiteral("background: #000; color: #8B939C; border-radius: 10px;"));
+    m_coverLabel->setStyleSheet(QStringLiteral("background: transparent; color: #8B93A6;"));
     m_stack->addWidget(m_coverLabel);
 
 #if VF_ENABLE_PLAYER
@@ -183,6 +190,37 @@ PreviewPanel::PreviewPanel(QWidget *parent)
 }
 
 PreviewPanel::~PreviewPanel() = default;
+
+namespace {
+
+/// 给画面区套圆角遮罩。
+/// 必须跟着控件自己的尺寸走：如果只在面板 resize 时算一次，
+/// 首次算的时候控件可能还没被布局撑开，遮罩就会把画面永久裁成一小块。
+void applyRoundedSurfaceMask(QWidget *widget, int radius)
+{
+    if (!widget || widget->width() <= 4 || widget->height() <= 4)
+        return;
+    QPainterPath path;
+    path.addRoundedRect(QRectF(widget->rect()), radius, radius);
+    widget->setMask(QRegion(path.toFillPolygon().toPolygon()));
+}
+
+} // namespace
+
+bool PreviewPanel::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_stack && event->type() == QEvent::Resize)
+        applyRoundedSurfaceMask(m_stack, 11);
+    return QWidget::eventFilter(watched, event);
+}
+
+void PreviewPanel::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    // QSS 的 border-radius 不会裁剪子控件（视频窗口会画出直角），
+    // 所以给画面区套一个圆角遮罩，让整个"屏幕"真正是圆角的。
+    applyRoundedSurfaceMask(m_stack, 11);
+}
 
 void PreviewPanel::buildPlayerArea(QWidget *container)
 {

@@ -52,6 +52,9 @@ endif()
 
 set(VF_UI_SOURCES
     src/ui/Theme.cpp
+    src/ui/UiStyle.cpp
+    src/ui/UiWidgets.cpp
+    src/ui/Icons.cpp
     src/ui/MainWindow.cpp
     src/ui/MediaLibraryPanel.cpp
     src/ui/PreviewPanel.cpp

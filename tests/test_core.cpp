@@ -470,15 +470,23 @@ void testHwAccel()
     const QList<HardwareCapability> capabilities = HwAccelDetector::buildCapabilities(encoders);
     CHECK_EQ(capabilities.size(), 3);
     CHECK(capabilities.at(0).accel == HardwareAccel::Nvenc);
-    CHECK(capabilities.at(0).available);
+    // "编译进来了" 与 "本机能用" 是两件事：
+    // buildCapabilities 只负责标记 present，available 必须经过真实试编码才置位
+    CHECK(capabilities.at(0).present);
+    CHECK(!capabilities.at(0).available);
     CHECK_EQ(capabilities.at(0).encoders.size(), 2);
-    CHECK(capabilities.at(1).available);   // QSV
-    CHECK(!capabilities.at(2).available);  // AMF 不在列表里
+    CHECK(capabilities.at(1).present);    // QSV
+    CHECK(!capabilities.at(2).present);   // AMF 不在列表里
     CHECK_EQ(hardwareAccelName(HardwareAccel::Nvenc), QStringLiteral("NVIDIA NVENC"));
 
     // 没有硬件编码器时，bestAccel 必须安全返回 None
     HwAccelDetector detector;
     CHECK(detector.bestAccel() == HardwareAccel::None);
+
+    // 试编码接口在参数非法时必须安全返回 false，不能崩
+    CHECK(!HwAccelDetector::verifyEncoder(QString(), QStringLiteral("h264_nvenc")));
+    CHECK(!HwAccelDetector::verifyEncoder(QStringLiteral("C:/nope/ffmpeg.exe"),
+                                          QStringLiteral("h264_nvenc")));
 }
 
 void testSizeEstimator()

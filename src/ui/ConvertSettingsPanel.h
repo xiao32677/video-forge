@@ -30,6 +30,8 @@ class QSpinBox;
 
 namespace vf {
 
+class SectionCard;
+
 class ConvertSettingsPanel : public QWidget
 {
     Q_OBJECT
@@ -66,16 +68,16 @@ signals:
     void startRequested();
     void stopRequested();
 
-private slots:
+private:
+    // 这两个不是槽也可以：全部连接都用新式函数指针语法
     void onPresetChanged();
     void refreshEstimate();
 
-private:
-    QGroupBox *buildOutputGroup();
-    QGroupBox *buildVideoGroup();
-    QGroupBox *buildAudioGroup();
-    QGroupBox *buildTrimGroup();
-    QGroupBox *buildAdvancedGroup();
+    SectionCard *buildOutputGroup();
+    SectionCard *buildVideoGroup();
+    SectionCard *buildAudioGroup();
+    SectionCard *buildTrimGroup();
+    SectionCard *buildAdvancedGroup();
     void updateEnabledStates();
 
     MediaInfo m_info;
@@ -103,12 +105,12 @@ private:
     QCheckBox *m_copyAudioCheck = nullptr;
     QCheckBox *m_removeAudioCheck = nullptr;
 
-    QGroupBox *m_trimGroup = nullptr;
+    SectionCard *m_trimGroup = nullptr;
     QCheckBox *m_trimCheck = nullptr;
     QDoubleSpinBox *m_trimStartSpin = nullptr;
     QDoubleSpinBox *m_trimEndSpin = nullptr;
 
-    QGroupBox *m_advancedGroup = nullptr;
+    SectionCard *m_advancedGroup = nullptr;
     QCheckBox *m_hardwareCheck = nullptr;
     QLabel *m_hardwareHint = nullptr;
     QCheckBox *m_fastStartCheck = nullptr;
@@ -116,6 +118,7 @@ private:
     QLineEdit *m_extraArgsEdit = nullptr;
 
     QLabel *m_estimateLabel = nullptr;
+    QLabel *m_estimateMetric = nullptr;
     QPushButton *m_startButton = nullptr;
     QPushButton *m_stopButton = nullptr;
 };

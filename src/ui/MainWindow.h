@@ -22,12 +22,15 @@
 class QAction;
 class QLabel;
 class QProgressBar;
+class QPushButton;
 class QSplitter;
 class QSystemTrayIcon;
 class QTimer;
+class QToolBar;
 
 namespace vf {
 
+class Chip;
 class ConvertJob;
 class ConvertSettingsPanel;
 class JobQueuePanel;
@@ -95,7 +98,8 @@ private slots:
 private:
     void buildActions();
     void buildMenus();
-    void buildToolBar();
+    /// 顶部区域：第一行品牌 + 状态胶囊，第二行操作按钮
+    QWidget *buildHeader(QWidget *parent);
     void buildCentralWidget();
     void buildStatusBar();
     void buildTrayIcon();
@@ -103,6 +107,8 @@ private:
     void restoreSettings();
     void saveSettings();
 
+    /// 主题切换后重建图标（图标颜色跟随主题）
+    void refreshIcons();
     void updateFfmpegStatus();
     void refreshThumbnails(const MediaInfo &info);
     void probeFile(const QString &filePath);
@@ -126,6 +132,10 @@ private:
     QSplitter *m_verticalSplitter = nullptr;
     QSplitter *m_horizontalSplitter = nullptr;
 
+    QWidget *m_header = nullptr;
+    QPushButton *m_ffmpegStatusButton = nullptr;
+    Chip *m_accelChip = nullptr;
+    Chip *m_queueChip = nullptr;
     QLabel *m_ffmpegStatusLabel = nullptr;
     QLabel *m_queueStatusLabel = nullptr;
     QLabel *m_currentFileLabel = nullptr;

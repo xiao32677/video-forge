@@ -1,7 +1,9 @@
 #include "ui/ConvertSettingsPanel.h"
 #include "core/Format.h"
 #include "core/SizeEstimator.h"
+#include "ui/Icons.h"
 #include "ui/Theme.h"
+#include "ui/UiWidgets.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -51,9 +53,14 @@ ConvertSettingsPanel::ConvertSettingsPanel(QWidget *parent)
     outer->setContentsMargins(6, 10, 10, 10);
     outer->setSpacing(8);
 
+    auto *titleRow = new QHBoxLayout;
+    titleRow->setSpacing(7);
+    titleRow->addWidget(new GlyphLabel(icons::Glyph::Sliders, 16, QColor(), this));
     auto *title = new QLabel(QStringLiteral("转换设置"), this);
-    title->setProperty("role", "title");
-    outer->addWidget(title);
+    title->setProperty("role", "panelTitle");
+    titleRow->addWidget(title);
+    titleRow->addStretch();
+    outer->addLayout(titleRow);
 
     // 内容较多，放进滚动区，小窗口下也不会挤爆
     auto *scroll = new QScrollArea(this);
@@ -77,23 +84,41 @@ ConvertSettingsPanel::ConvertSettingsPanel(QWidget *parent)
     outer->addWidget(scroll, 1);
 
     // ------------------------------------------------------------ 预估 + 按钮
-    m_estimateLabel = new QLabel(this);
-    m_estimateLabel->setProperty("role", "card");
+    // "预计输出多少"是普通用户最关心的一句话，值得单独做成一张信息卡
+    auto *estimateCard = new QFrame(this);
+    estimateCard->setProperty("role", "card");
+    auto *estimateLayout = new QHBoxLayout(estimateCard);
+    estimateLayout->setContentsMargins(12, 10, 12, 10);
+    estimateLayout->setSpacing(11);
+    estimateLayout->addWidget(new GlyphLabel(icons::Glyph::Gauge, 22, QColor(), estimateCard), 0,
+                              Qt::AlignTop);
+
+    auto *estimateColumn = new QVBoxLayout;
+    estimateColumn->setContentsMargins(0, 0, 0, 0);
+    estimateColumn->setSpacing(2);
+    m_estimateMetric = new QLabel(QStringLiteral("等待选择文件"), estimateCard);
+    m_estimateMetric->setProperty("role", "metric");
+    m_estimateLabel = new QLabel(QStringLiteral("导入文件后会自动估算输出体积"), estimateCard);
+    m_estimateLabel->setProperty("role", "hint");
     m_estimateLabel->setWordWrap(true);
-    m_estimateLabel->setContentsMargins(10, 8, 10, 8);
-    m_estimateLabel->setText(QStringLiteral("预计输出：请先选择一个文件"));
-    outer->addWidget(m_estimateLabel);
+    estimateColumn->addWidget(m_estimateMetric);
+    estimateColumn->addWidget(m_estimateLabel);
+    estimateLayout->addLayout(estimateColumn, 1);
+    outer->addWidget(estimateCard);
 
     m_startButton = new QPushButton(QStringLiteral("开始转换"), this);
     m_startButton->setProperty("accent", true);
-    m_startButton->setMinimumHeight(40);
+    m_startButton->setIcon(icons::icon(icons::Glyph::PlayCircle,
+                                       QColor(QStringLiteral("#FFFFFF")), 17));
+    m_startButton->setMinimumHeight(42);
     m_startButton->setCursor(Qt::PointingHandCursor);
-    m_startButton->setToolTip(QStringLiteral("把媒体库里的所有文件按当前设置加入转换队列"));
+    m_startButton->setToolTip(QStringLiteral("把媒体库里的所有文件按当前设置加入转换队列（F5）"));
     connect(m_startButton, &QPushButton::clicked, this, &ConvertSettingsPanel::startRequested);
     outer->addWidget(m_startButton);
 
     m_stopButton = new QPushButton(QStringLiteral("取消全部任务"), this);
     m_stopButton->setProperty("danger", true);
+    m_stopButton->setIcon(icons::icon(icons::Glyph::Stop, theme::dangerColor(), 14));
     m_stopButton->setCursor(Qt::PointingHandCursor);
     m_stopButton->setEnabled(false);
     connect(m_stopButton, &QPushButton::clicked, this, &ConvertSettingsPanel::stopRequested);
@@ -102,10 +127,10 @@ ConvertSettingsPanel::ConvertSettingsPanel(QWidget *parent)
     onPresetChanged();
 }
 
-QGroupBox *ConvertSettingsPanel::buildOutputGroup()
+SectionCard *ConvertSettingsPanel::buildOutputGroup()
 {
-    auto *group = new QGroupBox(QStringLiteral("输出格式"), this);
-    auto *layout = new QVBoxLayout(group);
+    auto *group = new SectionCard(QStringLiteral("输出格式"), icons::Glyph::Convert, this);
+    auto *layout = group->body();
     layout->setSpacing(7);
 
     m_presetCombo = new QComboBox(group);
@@ -165,11 +190,11 @@ QGroupBox *ConvertSettingsPanel::buildOutputGroup()
     return group;
 }
 
-QGroupBox *ConvertSettingsPanel::buildVideoGroup()
+SectionCard *ConvertSettingsPanel::buildVideoGroup()
 {
-    auto *group = new QGroupBox(QStringLiteral("画质与尺寸"), this);
-    auto *layout = new QFormLayout(group);
-    layout->setLabelAlignment(Qt::AlignLeft);
+    auto *group = new SectionCard(QStringLiteral("画质与尺寸"), icons::Glyph::Sliders, this);
+    auto *layout = new QFormLayout;
+    layout->setContentsMargins(0, 0, 0, 0);
     layout->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
     layout->setSpacing(7);
 
@@ -278,13 +303,15 @@ QGroupBox *ConvertSettingsPanel::buildVideoGroup()
                        "仅在换封装格式时可用；勾选后上面的画质/分辨率设置不再生效"));
     layout->addRow(QString(), m_copyVideoCheck);
 
+    group->body()->addLayout(layout);
     return group;
 }
 
-QGroupBox *ConvertSettingsPanel::buildAudioGroup()
+SectionCard *ConvertSettingsPanel::buildAudioGroup()
 {
-    auto *group = new QGroupBox(QStringLiteral("音频"), this);
-    auto *layout = new QFormLayout(group);
+    auto *group = new SectionCard(QStringLiteral("音频"), icons::Glyph::Volume, this);
+    auto *layout = new QFormLayout;
+    layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(7);
 
     m_audioBitrateCombo = new QComboBox(group);
@@ -315,14 +342,15 @@ QGroupBox *ConvertSettingsPanel::buildAudioGroup()
     m_removeAudioCheck->setToolTip(QStringLiteral("输出的视频没有声音"));
     layout->addRow(QString(), m_removeAudioCheck);
 
+    group->body()->addLayout(layout);
     return group;
 }
 
-QGroupBox *ConvertSettingsPanel::buildTrimGroup()
+SectionCard *ConvertSettingsPanel::buildTrimGroup()
 {
-    auto *group = new QGroupBox(QStringLiteral("裁剪（只转换片段）"), this);
+    auto *group = new SectionCard(QStringLiteral("裁剪（只转换片段）"), icons::Glyph::Scissors, this);
     m_trimGroup = group;
-    auto *layout = new QVBoxLayout(group);
+    auto *layout = group->body();
     layout->setSpacing(7);
 
     m_trimCheck = new QCheckBox(QStringLiteral("启用裁剪"), group);
@@ -362,11 +390,11 @@ QGroupBox *ConvertSettingsPanel::buildTrimGroup()
     return group;
 }
 
-QGroupBox *ConvertSettingsPanel::buildAdvancedGroup()
+SectionCard *ConvertSettingsPanel::buildAdvancedGroup()
 {
-    auto *group = new QGroupBox(QStringLiteral("高级（可选）"), this);
+    auto *group = new SectionCard(QStringLiteral("高级（可选）"), icons::Glyph::Gear, this);
     m_advancedGroup = group;
-    auto *layout = new QVBoxLayout(group);
+    auto *layout = group->body();
     layout->setSpacing(7);
 
     m_hardwareCheck = new QCheckBox(QStringLiteral("使用显卡硬件加速"), group);
@@ -414,7 +442,10 @@ void ConvertSettingsPanel::clearMedia()
     m_info = MediaInfo();
     m_trimStartSpin->setValue(0.0);
     m_trimEndSpin->setValue(0.0);
-    m_estimateLabel->setText(QStringLiteral("预计输出：请先选择一个文件"));
+    if (m_estimateMetric)
+        m_estimateMetric->setText(QStringLiteral("等待选择文件"));
+    if (m_estimateLabel)
+        m_estimateLabel->setText(QStringLiteral("导入文件后会自动估算输出体积"));
 }
 
 void ConvertSettingsPanel::setOutputDirectory(const QString &directory)
@@ -609,16 +640,30 @@ void ConvertSettingsPanel::updateEnabledStates()
 void ConvertSettingsPanel::refreshEstimate()
 {
     if (!m_info.ok) {
-        m_estimateLabel->setText(QStringLiteral("预计输出：请先选择一个文件"));
+        if (m_estimateMetric)
+            m_estimateMetric->setText(QStringLiteral("等待选择文件"));
+        if (m_estimateLabel)
+            m_estimateLabel->setText(QStringLiteral("导入文件后会自动估算输出体积"));
         return;
     }
 
     const ConvertOptions options = currentOptions();
     const SizeEstimate estimate = SizeEstimator::estimate(m_info, m_preset, options);
-    QString text = SizeEstimator::describe(estimate);
+
+    if (m_estimateMetric) {
+        m_estimateMetric->setText(estimate.bytes > 0
+            ? QStringLiteral("预计输出 %1%2").arg(fmt::size(estimate.bytes),
+                                                  estimate.reliable ? QString() : QStringLiteral("（估算）"))
+            : QStringLiteral("无法预估体积"));
+    }
+
+    QStringList details;
+    if (!estimate.comparison.isEmpty())
+        details << estimate.comparison;
     if (!estimate.explanation.isEmpty())
-        text += QStringLiteral("\n%1").arg(estimate.explanation);
-    m_estimateLabel->setText(text);
+        details << estimate.explanation;
+    if (m_estimateLabel)
+        m_estimateLabel->setText(details.join(QStringLiteral("　·　")));
 
     // 输出文件名预览，避免用户不知道文件会落在哪儿。
     // 长路径必须做省略，否则会把整个面板撑宽（中文/长路径场景下尤其明显）。

@@ -32,10 +32,22 @@ Mode toggle();
 
 /// 主色调（强调色）
 QColor accent();
+/// 渐变用的第二强调色
+QColor accentAlt();
+/// 主要文字颜色
+QColor textColor();
 /// 次要文字颜色（当前主题下）
 QColor mutedText();
 /// 卡片背景色
 QColor cardBackground();
+/// 比卡片更亮一层的背景（悬停、抬升）
+QColor elevatedBackground();
+/// 输入控件背景
+QColor inputBackground();
+/// 窗口背景
+QColor windowBackground();
+/// 边框色
+QColor borderColor();
 /// 成功/警告/错误语义色
 QColor successColor();
 QColor warningColor();

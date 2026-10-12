@@ -10,11 +10,13 @@
 #include "job/JobQueue.h"
 #include "ui/AppIcon.h"
 #include "ui/ConvertSettingsPanel.h"
+#include "ui/Icons.h"
 #include "ui/JobQueuePanel.h"
 #include "ui/LogPanel.h"
 #include "ui/MediaLibraryPanel.h"
 #include "ui/PreviewPanel.h"
 #include "ui/Theme.h"
+#include "ui/UiWidgets.h"
 
 #include <QActionGroup>
 #include <QApplication>
@@ -50,6 +52,7 @@
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
@@ -79,14 +82,14 @@ MainWindow::MainWindow(QWidget *parent)
     m_queue = new JobQueue(m_locator, this);
     m_hwDetector = new HwAccelDetector(this);
 
-    buildCentralWidget();
     buildActions();
     buildMenus();
-    buildToolBar();
+    buildCentralWidget();
     buildStatusBar();
     buildTrayIcon();
     connectSignals();
     restoreSettings();
+    refreshIcons();
 
     // ffmpeg 定位：启动时立刻做，并且把结果反映到状态栏
     m_locator->locate();
@@ -101,6 +104,24 @@ MainWindow::MainWindow(QWidget *parent)
             watcher->deleteLater();
             m_hwDetectionDone = true;
             m_settings->setHardwareCapabilities(capabilities);
+
+            // 头部胶囊显示硬件加速能力，让"能不能加速"一眼可见
+            if (m_accelChip) {
+                QStringList available;
+                for (const HardwareCapability &capability : capabilities) {
+                    if (capability.available)
+                        available << capability.name;
+                }
+                if (available.isEmpty()) {
+                    m_accelChip->setText(QStringLiteral("软件编码 · CPU"));
+                    m_accelChip->setColor(theme::mutedText());
+                    m_accelChip->setGlyph(icons::Glyph::Gauge);
+                } else {
+                    m_accelChip->setText(QStringLiteral("硬件加速 · %1").arg(available.first()));
+                    m_accelChip->setColor(theme::successColor());
+                    m_accelChip->setGlyph(icons::Glyph::Bolt);
+                }
+            }
         });
         watcher->setFuture(QtConcurrent::run([this, ffmpegPath]() {
             HwAccelDetector detector;
@@ -128,6 +149,9 @@ void MainWindow::buildCentralWidget()
     auto *layout = new QVBoxLayout(central);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
+
+    m_header = buildHeader(central);
+    layout->addWidget(m_header);
 
     m_horizontalSplitter = new QSplitter(Qt::Horizontal, central);
     m_library = new MediaLibraryPanel(m_horizontalSplitter);
@@ -252,52 +276,215 @@ void MainWindow::buildMenus()
     addActions({m_addFilesAction, m_startAction});
 }
 
-void MainWindow::buildToolBar()
+QWidget *MainWindow::buildHeader(QWidget *parent)
 {
-    auto *toolBar = addToolBar(QStringLiteral("主工具栏"));
-    toolBar->setMovable(false);
-    toolBar->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    toolBar->setIconSize(QSize(18, 18));
+    auto *header = new QWidget(parent);
+    auto *headerLayout = new QVBoxLayout(header);
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+    headerLayout->setSpacing(0);
 
-    toolBar->addAction(m_addFilesAction);
-    toolBar->addAction(m_addFolderAction);
-    toolBar->addAction(m_removeAction);
-    toolBar->addAction(m_clearAction);
-    toolBar->addSeparator();
-    toolBar->addAction(m_startAction);
-    toolBar->addAction(m_pauseAction);
-    toolBar->addAction(m_cancelAction);
-    toolBar->addSeparator();
-    toolBar->addAction(m_setFfmpegAction);
-    toolBar->addAction(m_openOutputAction);
+    // ------------------------------------------------------------ 第一行：品牌 + 状态
+    auto *heroRow = new QFrame(header);
+    heroRow->setObjectName(QStringLiteral("heroRow"));
+    auto *heroLayout = new QHBoxLayout(heroRow);
+    heroLayout->setContentsMargins(14, 11, 14, 11);
+    heroLayout->setSpacing(10);
+
+    auto *logoLabel = new QLabel(heroRow);
+    logoLabel->setPixmap(appicon::logo(36));
+    logoLabel->setFixedSize(36, 36);
+    heroLayout->addWidget(logoLabel);
+
+    auto *textColumn = new QVBoxLayout;
+    textColumn->setContentsMargins(0, 0, 0, 0);
+    textColumn->setSpacing(1);
+    auto *title = new QLabel(QStringLiteral("VideoForge"), heroRow);
+    title->setProperty("role", "heroTitle");
+    auto *subtitle = new QLabel(QStringLiteral("视频格式转换器 · ffmpeg 内核 · 全程可视化"), heroRow);
+    subtitle->setProperty("role", "heroSub");
+    textColumn->addWidget(title);
+    textColumn->addWidget(subtitle);
+    heroLayout->addLayout(textColumn);
+
+    heroLayout->addStretch(1);
+
+    m_accelChip = new Chip(QStringLiteral("正在检测硬件…"), theme::mutedText(),
+                           icons::Glyph::Gauge, heroRow);
+    heroLayout->addWidget(m_accelChip);
+
+    m_queueChip = new Chip(QStringLiteral("队列为空"), theme::mutedText(),
+                           icons::Glyph::List, heroRow);
+    heroLayout->addWidget(m_queueChip);
+
+    headerLayout->addWidget(heroRow);
+
+    // ------------------------------------------------------------ 第二行：操作按钮
+    auto *actionRow = new QFrame(header);
+    actionRow->setObjectName(QStringLiteral("actionRow"));
+    auto *actionLayout = new QHBoxLayout(actionRow);
+    actionLayout->setContentsMargins(10, 7, 12, 8);
+    actionLayout->setSpacing(4);
+
+    auto makeToolButton = [actionRow](QAction *action, bool primary = false) {
+        auto *button = new QToolButton(actionRow);
+        button->setDefaultAction(action);
+        button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        button->setIconSize(QSize(16, 16));
+        button->setCursor(Qt::PointingHandCursor);
+        if (primary)
+            button->setProperty("primary", true);
+        return button;
+    };
+
+    actionLayout->addWidget(makeToolButton(m_addFilesAction));
+    actionLayout->addWidget(makeToolButton(m_addFolderAction));
+    actionLayout->addSpacing(6);
+    actionLayout->addWidget(makeToolButton(m_removeAction));
+    actionLayout->addWidget(makeToolButton(m_clearAction));
+    actionLayout->addSpacing(6);
+    actionLayout->addWidget(makeToolButton(m_startAction, true));
+    actionLayout->addWidget(makeToolButton(m_pauseAction));
+    actionLayout->addWidget(makeToolButton(m_resumeAction));
+    actionLayout->addWidget(makeToolButton(m_cancelAction));
+    actionLayout->addSpacing(6);
+    actionLayout->addWidget(makeToolButton(m_openOutputAction));
+    actionLayout->addWidget(makeToolButton(m_setFfmpegAction));
+
+    actionLayout->addStretch(1);
+
+    // 主题切换做成图标按钮，靠右
+    for (QAction *themeAction : {m_darkThemeAction, m_lightThemeAction}) {
+        auto *button = new QToolButton(actionRow);
+        button->setDefaultAction(themeAction);
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setIconSize(QSize(16, 16));
+        button->setCursor(Qt::PointingHandCursor);
+        actionLayout->addWidget(button);
+    }
+
+    headerLayout->addWidget(actionRow);
+    return header;
 }
 
 void MainWindow::buildStatusBar()
 {
-    m_ffmpegStatusLabel = new QLabel(this);
-    m_ffmpegStatusLabel->setContentsMargins(8, 0, 8, 0);
-    m_ffmpegStatusLabel->setCursor(Qt::PointingHandCursor);
-    m_ffmpegStatusLabel->setToolTip(QStringLiteral("点击可手动指定 ffmpeg 路径"));
-    statusBar()->addWidget(m_ffmpegStatusLabel);
+    // ffmpeg 状态做成"可点击的胶囊按钮"：用户看到红点就知道该点它
+    m_ffmpegStatusButton = new QPushButton(this);
+    m_ffmpegStatusButton->setProperty("chip", true);
+    m_ffmpegStatusButton->setCursor(Qt::PointingHandCursor);
+    m_ffmpegStatusButton->setFlat(true);
+    connect(m_ffmpegStatusButton, &QPushButton::clicked, this, &MainWindow::onChooseFfmpeg);
+    statusBar()->addWidget(m_ffmpegStatusButton);
 
     m_currentFileLabel = new QLabel(this);
-    m_currentFileLabel->setContentsMargins(8, 0, 8, 0);
+    m_currentFileLabel->setContentsMargins(12, 0, 8, 0);
+    m_currentFileLabel->setProperty("role", "hint");
     statusBar()->addWidget(m_currentFileLabel, 1);
 
     m_queueStatusLabel = new QLabel(this);
-    m_queueStatusLabel->setContentsMargins(8, 0, 8, 0);
+    m_queueStatusLabel->setContentsMargins(8, 0, 12, 0);
+    m_queueStatusLabel->setProperty("role", "hint");
     statusBar()->addPermanentWidget(m_queueStatusLabel);
 
     m_overallProgress = new QProgressBar(this);
     m_overallProgress->setRange(0, 1000);
     m_overallProgress->setValue(0);
-    m_overallProgress->setFixedWidth(220);
+    m_overallProgress->setFixedWidth(210);
     m_overallProgress->setTextVisible(true);
     m_overallProgress->setFormat(QStringLiteral("总进度 %p%"));
     m_overallProgress->setVisible(false);
     statusBar()->addPermanentWidget(m_overallProgress);
+}
 
-    connect(m_ffmpegStatusLabel, &QLabel::linkActivated, this, &MainWindow::onChooseFfmpeg);
+void MainWindow::refreshIcons()
+{
+    const QColor normal = theme::textColor();
+    const QColor muted = theme::mutedText();
+    const QColor accent = theme::accent();
+    const QColor danger = theme::dangerColor();
+    const QColor success = theme::successColor();
+
+    m_addFilesAction->setIcon(icons::icon(icons::Glyph::Add, accent, 16));
+    m_addFolderAction->setIcon(icons::icon(icons::Glyph::Folder, normal, 16));
+    m_removeAction->setIcon(icons::icon(icons::Glyph::Trash, normal, 16));
+    m_clearAction->setIcon(icons::icon(icons::Glyph::Stack, normal, 16));
+    m_startAction->setIcon(icons::icon(icons::Glyph::PlayCircle, QColor(QStringLiteral("#FFFFFF")), 17));
+    m_pauseAction->setIcon(icons::icon(icons::Glyph::Pause, normal, 16));
+    m_resumeAction->setIcon(icons::icon(icons::Glyph::Play, normal, 16));
+    m_cancelAction->setIcon(icons::icon(icons::Glyph::Stop, danger, 16));
+    m_clearFinishedAction->setIcon(icons::icon(icons::Glyph::Check, success, 16));
+    m_darkThemeAction->setIcon(icons::icon(icons::Glyph::Moon, normal, 16));
+    m_lightThemeAction->setIcon(icons::icon(icons::Glyph::Sun, normal, 16));
+    m_toggleLogAction->setIcon(icons::icon(icons::Glyph::Terminal, normal, 16));
+    m_setFfmpegAction->setIcon(icons::icon(icons::Glyph::Gear, normal, 16));
+    m_openOutputAction->setIcon(icons::icon(icons::Glyph::FolderOpen, normal, 16));
+    m_clearCacheAction->setIcon(icons::icon(icons::Glyph::Refresh, normal, 16));
+    m_aboutAction->setIcon(icons::icon(icons::Glyph::Info, accent, 16));
+    m_aboutQtAction->setIcon(icons::icon(icons::Glyph::Info, muted, 16));
+    m_quitAction->setIcon(icons::icon(icons::Glyph::Cross, muted, 16));
+
+    updateFfmpegStatus();
+    updateStatusBar();
+}
+
+void MainWindow::updateStatusBar()
+{
+    const int total = m_queue->count();
+    const int running = m_queue->runningCount();
+    const int completed = m_queue->finishedCount();
+    const int failed = m_queue->failedCount();
+
+    if (m_queueChip) {
+        if (total == 0) {
+            m_queueChip->setText(QStringLiteral("队列为空"));
+            m_queueChip->setColor(theme::mutedText());
+            m_queueChip->setGlyph(icons::Glyph::List);
+        } else {
+            m_queueChip->setText(QStringLiteral("队列 %1 · 进行 %2 · 完成 %3 · 失败 %4")
+                                     .arg(total).arg(running).arg(completed).arg(failed));
+            m_queueChip->setColor(failed > 0 ? theme::dangerColor()
+                                             : (running > 0 ? theme::accent()
+                                                            : theme::successColor()));
+            m_queueChip->setGlyph(running > 0 ? icons::Glyph::Refresh : icons::Glyph::List);
+        }
+    }
+
+    if (m_queueStatusLabel) {
+        m_queueStatusLabel->setText(total == 0
+            ? QStringLiteral("就绪")
+            : QStringLiteral("进行 %1 / 共 %2").arg(running).arg(total));
+    }
+
+    if (m_overallProgress->isVisible())
+        m_overallProgress->setValue(static_cast<int>(m_queue->overallProgress() * 1000));
+    recomputeBusyState();
+}
+
+void MainWindow::updateFfmpegStatus()
+{
+    const FfmpegTools tools = m_locator->tools();
+    if (!m_ffmpegStatusButton)
+        return;
+
+    if (tools.valid()) {
+        m_ffmpegStatusButton->setText(QStringLiteral("ffmpeg %1").arg(tools.version));
+        m_ffmpegStatusButton->setIcon(icons::icon(icons::Glyph::Check, theme::successColor(), 13));
+        m_ffmpegStatusButton->setStyleSheet(
+            QStringLiteral("QPushButton { color: %1; border-color: %2; }")
+                .arg(theme::successColor().name(),
+                     QColor(theme::successColor()).darker(180).name()));
+        m_ffmpegStatusButton->setToolTip(QStringLiteral("ffmpeg：%1\nffprobe：%2\n点击可更换")
+                                            .arg(QDir::toNativeSeparators(tools.ffmpegPath),
+                                                 QDir::toNativeSeparators(tools.ffprobePath)));
+    } else {
+        m_ffmpegStatusButton->setText(QStringLiteral("未找到 ffmpeg · 点击设置"));
+        m_ffmpegStatusButton->setIcon(icons::icon(icons::Glyph::Warning, theme::dangerColor(), 13));
+        m_ffmpegStatusButton->setStyleSheet(
+            QStringLiteral("QPushButton { color: %1; border-color: %2; }")
+                .arg(theme::dangerColor().name(),
+                     QColor(theme::dangerColor()).darker(180).name()));
+        m_ffmpegStatusButton->setToolTip(m_locator->failureReason());
+    }
 }
 
 void MainWindow::buildTrayIcon()
@@ -438,10 +625,12 @@ void MainWindow::connectSignals()
     });
     connect(m_darkThemeAction, &QAction::triggered, this, [this]() {
         theme::apply(*qApp, theme::Mode::Dark);
+        refreshIcons();
         refreshThumbnails(m_infoCache.value(m_currentFile));
     });
     connect(m_lightThemeAction, &QAction::triggered, this, [this]() {
         theme::apply(*qApp, theme::Mode::Light);
+        refreshIcons();
         refreshThumbnails(m_infoCache.value(m_currentFile));
     });
     connect(m_toggleLogAction, &QAction::toggled, this, [this](bool visible) {
@@ -894,43 +1083,6 @@ void MainWindow::onJobSelectionChanged(const QString &jobId)
                                                 job->errorMessage()));
     } else {
         m_log->setCommand(QString(), QString());
-    }
-}
-
-void MainWindow::updateStatusBar()
-{
-    const int total = m_queue->count();
-    if (total == 0) {
-        m_queueStatusLabel->setText(QStringLiteral("队列为空"));
-    } else {
-        m_queueStatusLabel->setText(QStringLiteral("队列 %1 · 进行 %2 · 完成 %3 · 失败 %4")
-                                        .arg(total)
-                                        .arg(m_queue->runningCount())
-                                        .arg(m_queue->finishedCount())
-                                        .arg(m_queue->failedCount()));
-    }
-    if (m_overallProgress->isVisible())
-        m_overallProgress->setValue(static_cast<int>(m_queue->overallProgress() * 1000));
-    recomputeBusyState();
-}
-
-void MainWindow::updateFfmpegStatus()
-{
-    const FfmpegTools tools = m_locator->tools();
-    m_ffmpegStatusLabel->setTextFormat(Qt::RichText);
-    if (tools.valid()) {
-        m_ffmpegStatusLabel->setText(
-            QStringLiteral("<a href='choose' style='color:%1; text-decoration:none;'>ffmpeg %2 ✔</a>")
-                .arg(theme::successColor().name(), tools.version));
-        m_ffmpegStatusLabel->setToolTip(QStringLiteral("ffmpeg：%1\nffprobe：%2\n点击可更换")
-                                            .arg(QDir::toNativeSeparators(tools.ffmpegPath),
-                                                 QDir::toNativeSeparators(tools.ffprobePath)));
-    } else {
-        m_ffmpegStatusLabel->setText(
-            QStringLiteral("<a href='choose' style='color:%1; text-decoration:none;'>"
-                           "⚠ 未找到 ffmpeg，点击这里设置</a>")
-                .arg(theme::dangerColor().name()));
-        m_ffmpegStatusLabel->setToolTip(m_locator->failureReason());
     }
 }
 
