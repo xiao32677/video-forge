@@ -108,11 +108,81 @@ if (-not $SkipFfmpeg) {
         New-Item -ItemType Directory -Force -Path $target | Out-Null
         Copy-Item (Join-Path $FfmpegBin "ffmpeg.exe") $target -Force
         Copy-Item (Join-Path $FfmpegBin "ffprobe.exe") $target -Force
-        Copy-Item (Join-Path $FfmpegBin "LICENSE") $target -Force -ErrorAction SilentlyContinue
+        # ffmpeg 是 GPL 许可：分发二进制必须带上许可证文本
+        foreach ($doc in @("LICENSE", "README.txt")) {
+            if (Test-Path (Join-Path $FfmpegBin $doc)) {
+                Copy-Item (Join-Path $FfmpegBin $doc) $target -Force
+            } elseif (Test-Path (Join-Path (Split-Path $FfmpegBin -Parent) $doc)) {
+                Copy-Item (Join-Path (Split-Path $FfmpegBin -Parent) $doc) $target -Force
+            }
+        }
+        if (-not (Test-Path (Join-Path $target "LICENSE"))) {
+            Write-Host "    注意：没有找到 ffmpeg 的 LICENSE 文件，将写入一份说明代替" -ForegroundColor Yellow
+        }
     } else {
         Write-Host "==> 未找到 ffmpeg，跳出内置步骤（运行 scripts/get-ffmpeg.ps1 可自动下载）" -ForegroundColor Yellow
     }
 }
+
+# ---- 第三方许可：分发 Qt DLL 与 ffmpeg 二进制必须一并给出许可与来源说明 ----
+$licenseDir = Join-Path $packageDir "LICENSES"
+New-Item -ItemType Directory -Force -Path $licenseDir | Out-Null
+
+if (Test-Path (Join-Path $root "LICENSE")) {
+    Copy-Item (Join-Path $root "LICENSE") (Join-Path $licenseDir "VideoForge-MIT.txt") -Force
+}
+$ffmpegLicense = Join-Path $packageDir "ffmpeg/bin/LICENSE"
+if (Test-Path $ffmpegLicense) {
+    Copy-Item $ffmpegLicense (Join-Path $licenseDir "ffmpeg-GPL-3.0.txt") -Force
+}
+
+@"
+Qt 6.9.3 —— 许可与合规说明
+========================================
+
+本程序使用 Qt 6.9.3（The Qt Company，https://www.qt.io）构建，
+并以动态链接方式使用了以下 Qt 模块的官方预编译库：
+
+    Qt6Core / Qt6Gui / Qt6Widgets / Qt6Concurrent / Qt6Network / Qt6Svg
+    Qt6Multimedia / Qt6MultimediaWidgets
+    以及 platforms、imageformats、styles、tls、multimedia 等插件
+
+Qt 在开源使用场景下采用 GNU Lesser General Public License v3 (LGPL-3.0)。
+LGPL-3.0 完整文本见 https://www.gnu.org/licenses/lgpl-3.0.html
+
+为满足 LGPL-3.0 的要求，特别说明：
+  1. 本程序**未修改** Qt 的任何源代码或二进制文件；
+  2. Qt 以**动态链接库（DLL）**形式使用，因此你可以用自己编译的、
+     接口兼容的 Qt 库替换本目录下的同名 DLL 来重新组合本程序；
+  3. 本程序自身源码以 MIT 许可发布（见 VideoForge-MIT.txt），
+     可自由获取与修改，从而可以重新链接 Qt；
+  4. 如果你需要 Qt 的完整源码，请从 https://download.qt.io/ 获取。
+
+如果你的使用场景不接受 LGPL-3.0，可以向 The Qt Company 购买商业许可，
+或改用其它 GUI 框架重新实现界面层。
+"@ | Set-Content -Path (Join-Path $licenseDir "Qt-LGPL-3.0-说明.txt") -Encoding UTF8
+
+@"
+第三方组件清单
+========================================
+
+组件        版本                              许可            用途
+------------------------------------------------------------------------------------
+Qt          6.9.3 (mingw_64)                  LGPL-3.0        界面框架、播放器、网络
+ffmpeg      9.0.2-essentials (gyan.dev)       GPL-3.0         音视频转换与信息读取（子进程调用）
+MinGW-w64   GCC 13.1.0                        GPL/LGPL 例外   编译器与运行库
+VideoForge  1.0.0                             MIT             本项目自身代码
+
+ffmpeg 的使用方式说明：
+    本程序**不修改也不链接** ffmpeg 代码，而是以**独立子进程**方式调用
+    ffmpeg.exe / ffprobe.exe 的命令行接口。因此本程序自身的 MIT 许可
+    不受 ffmpeg 的 GPL 许可影响。
+
+    但请注意：随包分发的 ffmpeg 二进制本身是 GPL-3.0 许可的，
+    其许可证全文见 LICENSES/ffmpeg-GPL-3.0.txt。
+    如需替换为 LGPL 构建：删除 ffmpeg/bin 目录，把你自己的 ffmpeg.exe 与
+    ffprobe.exe 放进同一位置即可，程序会自动使用你提供的版本。
+"@ | Set-Content -Path (Join-Path $licenseDir "第三方组件清单.txt") -Encoding UTF8
 
 # ---- 额外说明文件 ----
 @"
@@ -124,15 +194,21 @@ VideoForge $version · 绿色便携版
 包内目录说明：
   VideoForge.exe      主程序
   ffmpeg/bin/         内置的 ffmpeg 与 ffprobe（程序启动时自动使用）
+  LICENSES/           第三方许可与合规说明（Qt LGPL、ffmpeg GPL、组件清单）
   docs/               架构说明、测试报告、会话总结
   README.md           使用说明
 
-如果杀毒软件误报：本项目使用 MinGW 静态链接自编译，未做数字签名，
-个别引擎可能对未签名的新程序给出启发式告警，添加信任即可。
+关于许可（重要）：
+  本项目自身代码以 MIT 许可发布，见 LICENSES/VideoForge-MIT.txt。
+  程序以**子进程**方式调用 ffmpeg，不修改也不链接 ffmpeg 代码；
+  但随包分发的 ffmpeg 二进制本身是 GPL-3.0，许可证全文见
+  LICENSES/ffmpeg-GPL-3.0.txt。若你的场景不允许 GPL，删除 ffmpeg/bin
+  并放入自己的 LGPL 构建即可，程序会自动使用你提供的版本。
+  界面框架 Qt 6.9.3 以 LGPL-3.0 动态链接方式使用，
+  说明见 LICENSES/Qt-LGPL-3.0-说明.txt。
 
-ffmpeg 许可：见 ffmpeg/bin/LICENSE（本包内置的是 gyan.dev 的 essentials 构建，
-GPL 许可）。如你的使用场景不允许 GPL，请删除 ffmpeg/bin 并自行放置 LGPL 构建，
-程序会自动使用你放置的版本。
+如果杀毒软件误报：本项目未做数字签名，个别引擎可能对未签名的新程序
+给出启发式告警，添加信任即可。
 "@ | Set-Content -Path (Join-Path $packageDir "使用说明.txt") -Encoding UTF8
 
 Write-Host "==> 压缩" -ForegroundColor Cyan

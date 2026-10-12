@@ -252,14 +252,24 @@ powershell -File scripts/make-test-media.ps1
 
 ---
 
-## ffmpeg 许可说明
+## 许可说明
 
-- 本项目**不修改** ffmpeg 二进制，仅以子进程方式调用。
-- 便携包内置的是 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 的 `essentials` 构建（**GPL** 许可），
-  其许可证文本随包放在 `ffmpeg/bin/`。
-- 如果你的使用场景不允许 GPL：删除 `ffmpeg/bin` 目录，改用 LGPL 构建放入同位置，
-  程序会自动使用你提供的版本（无需重新编译）。
-- 本项目自身代码以 MIT 许可发布，见 [LICENSE](LICENSE)。
+程序的"关于 → 开源许可与第三方组件"里可以直接查看完整清单；便携包内也有 `LICENSES/` 目录。
+
+| 组件 | 许可 | 使用方式 |
+|---|---|---|
+| **VideoForge** | MIT | 本项目自身代码（见 [LICENSE](LICENSE)） |
+| **Qt 6.9.3** | LGPL-3.0 | 动态链接官方预编译库。**未修改**任何 Qt 文件，因此你可以用自行编译的同名 DLL 替换后重新组合本程序 |
+| **ffmpeg 9.0.2** | GPL-3.0 | **以独立子进程调用命令行**，不修改也不链接 ffmpeg 代码。因此本项目自身的 MIT 许可不受其 GPL 影响 |
+| **MinGW-w64 GCC 13.1** | GPL + 运行库例外 | 编译器与运行库 |
+
+- ffmpeg 二进制来源：[gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 的 `essentials` 构建，
+  许可证全文随包放在 `ffmpeg/bin/LICENSE` 与 `LICENSES/ffmpeg-GPL-3.0.txt`。
+- **如果你的场景不允许 GPL**：删除便携包里的 `ffmpeg/bin` 目录，把你自己的
+  `ffmpeg.exe` 与 `ffprobe.exe`（例如 LGPL 构建）放进同一位置即可，程序会自动使用你提供的版本，
+  **无需重新编译**。
+- 也可以在程序里用"帮助 → 设置 ffmpeg 路径"切换到任意位置的 ffmpeg，或直接用
+  "自动下载并安装"重新获取一份。
 
 ---
 

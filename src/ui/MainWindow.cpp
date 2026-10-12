@@ -199,6 +199,7 @@ void MainWindow::buildActions()
     m_clearCacheAction = new QAction(QStringLiteral("清空缩略图缓存"), this);
     m_aboutAction = new QAction(QStringLiteral("关于 VideoForge"), this);
     m_aboutQtAction = new QAction(QStringLiteral("关于 Qt"), this);
+    m_licensesAction = new QAction(QStringLiteral("开源许可与第三方组件…"), this);
     m_quitAction = new QAction(QStringLiteral("退出"), this);
     m_quitAction->setShortcut(QKeySequence::Quit);
 
@@ -244,6 +245,7 @@ void MainWindow::buildMenus()
     helpMenu->addAction(m_setFfmpegAction);
     helpMenu->addSeparator();
     helpMenu->addAction(m_aboutAction);
+    helpMenu->addAction(m_licensesAction);
     helpMenu->addAction(m_aboutQtAction);
 
     // 右键菜单也顺手挂上（媒体库自带的在面板内部）
@@ -645,6 +647,7 @@ void MainWindow::connectSignals()
                                  QStringLiteral("缩略图缓存已清空。"));
     });
     connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAbout);
+    connect(m_licensesAction, &QAction::triggered, this, &MainWindow::onShowLicenses);
     connect(m_aboutQtAction, &QAction::triggered, qApp, &QApplication::aboutQt);
     connect(m_quitAction, &QAction::triggered, this, [this]() {
         m_forceQuit = true;
@@ -1329,6 +1332,51 @@ void MainWindow::onToggleTheme()
 {
     const theme::Mode mode = theme::toggle();
     theme::apply(*qApp, mode);
+}
+
+void MainWindow::onShowLicenses()
+{
+    // 程序分发了 Qt 的 DLL（LGPL-3.0）与 ffmpeg 二进制（GPL-3.0），
+    // 所以许可与来源必须能在程序里直接查到，而不是只躺在压缩包里。
+    const QString licenseDir = QCoreApplication::applicationDirPath()
+        + QStringLiteral("/LICENSES");
+
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("开源许可与第三方组件"));
+    box.setIcon(QMessageBox::Information);
+    box.setTextFormat(Qt::RichText);
+    box.setText(QStringLiteral(
+        "<h3>组件与许可</h3>"
+        "<table cellpadding='4'>"
+        "<tr><td><b>VideoForge 1.0.0</b></td><td>MIT</td><td>本项目自身代码</td></tr>"
+        "<tr><td><b>Qt %1</b></td><td>LGPL-3.0</td><td>界面框架 / 播放器 / 网络（动态链接）</td></tr>"
+        "<tr><td><b>ffmpeg %2</b></td><td>GPL-3.0</td><td>转换与信息读取（<b>子进程</b>调用命令行）</td></tr>"
+        "<tr><td><b>MinGW-w64 GCC 13.1</b></td><td>GPL + 运行库例外</td><td>编译器与运行库</td></tr>"
+        "</table>"
+        "<p><b>关于 ffmpeg</b>：本程序不修改、也不链接 ffmpeg 代码，"
+        "而是以独立子进程方式调用 <code>ffmpeg.exe / ffprobe.exe</code> 的命令行接口，"
+        "因此本项目自身的 MIT 许可不受 ffmpeg 的 GPL 影响。</p>"
+        "<p><b>关于 Qt</b>：以 LGPL-3.0 动态链接方式使用，未修改任何 Qt 文件；"
+        "你可以用自行编译的同名 DLL 替换本目录下的 Qt 库来重新组合本程序。</p>")
+        .arg(QString::fromLatin1(qVersion()),
+             m_locator->tools().version.isEmpty() ? QStringLiteral("(未检测到)")
+                                                  : m_locator->tools().version));
+
+    QPushButton *openButton = nullptr;
+    if (QFileInfo::exists(licenseDir)) {
+        box.setInformativeText(QStringLiteral("完整许可证文本位于：\n%1")
+                                   .arg(QDir::toNativeSeparators(licenseDir)));
+        openButton = box.addButton(QStringLiteral("打开许可目录"), QMessageBox::ActionRole);
+    } else {
+        box.setInformativeText(QStringLiteral(
+            "本项目源码以 MIT 发布；Qt 以 LGPL-3.0 动态链接使用；"
+            "ffmpeg 以子进程方式调用命令行。"));
+    }
+    box.addButton(QStringLiteral("关闭"), QMessageBox::AcceptRole);
+    box.exec();
+
+    if (openButton && box.clickedButton() == openButton)
+        QDesktopServices::openUrl(QUrl::fromLocalFile(licenseDir));
 }
 
 void MainWindow::onAbout()

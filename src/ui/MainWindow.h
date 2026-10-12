@@ -98,6 +98,8 @@ private slots:
     void refreshHardwareCapabilities();
     void onToggleTheme();
     void onAbout();
+    /// 第三方许可说明（分发了 Qt DLL 与 ffmpeg 二进制，必须能查到许可与来源）
+    void onShowLicenses();
     void onJobAdded(vf::ConvertJob *job);
     void onJobFinished(vf::ConvertJob *job, vf::JobState state);
     void onAllJobsFinished();
@@ -174,6 +176,7 @@ private:
     QAction *m_clearCacheAction = nullptr;
     QAction *m_aboutAction = nullptr;
     QAction *m_aboutQtAction = nullptr;
+    QAction *m_licensesAction = nullptr;
     QAction *m_quitAction = nullptr;
 
     // ---- 状态 ----
