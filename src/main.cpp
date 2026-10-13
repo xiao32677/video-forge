@@ -198,10 +198,27 @@ int main(int argc, char *argv[])
             window.triggerConversionForTest();
             QTimer::singleShot(4000, &window, [&window, directory]() {
                 window.grab().save(directory + QStringLiteral("/02-转换中.png"), "PNG");
-                QTimer::singleShot(30000, &window, [&window, directory]() {
+
+                // 等队列真正空闲再抓"转换完成"。
+                // 以前是固定等 30 秒，但耗时取决于素材长度和预设（2 分钟的片子用
+                // libx264 要 50 秒左右），固定等待会抓到"还在转"的画面，截图就假了。
+                auto *waiter = new QTimer(&window);
+                waiter->setInterval(400);
+                auto *startedAt = new QElapsedTimer; // 非 QObject，收尾时手工 delete
+                startedAt->start();
+                QObject::connect(waiter, &QTimer::timeout, &window,
+                                 [&window, directory, waiter, startedAt]() {
+                    // 上限 5 分钟，避免素材异常时把自动化挂死
+                    const bool done = !window.isConvertingForTest() || startedAt->elapsed() > 300000;
+                    if (!done)
+                        return;
+                    waiter->stop();
+                    delete startedAt;
+                    waiter->deleteLater();
                     window.grab().save(directory + QStringLiteral("/03-转换完成.png"), "PNG");
                     QTimer::singleShot(2000, qApp, &QApplication::quit);
                 });
+                waiter->start();
             });
         });
     }

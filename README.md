@@ -230,9 +230,9 @@ VideoForge/
 │       ├── LogPanel.*          # 按级别着色的日志与命令行
 │       └── AppIcon.*           # 应用图标
 ├── tests/                      # 单元测试 + 端到端测试脚本
-├── scripts/                    # 构建 / 打包 / 下载 ffmpeg / 生成测试素材
+├── scripts/                    # 构建 / 打包 / 下载 ffmpeg / 跑场景回归 / 生成截图
 ├── docs/                       # 交付物分析、架构、测试报告、会话总结
-└── testdata/                   # 合成测试素材（脚本生成，不入库）
+└── testdata/                   # 演示素材（真实视频，不入库）
 ```
 
 ---
@@ -240,15 +240,43 @@ VideoForge/
 ## 测试
 
 ```powershell
-# 单元测试：209 项断言，覆盖解析/命令构建/进度/体积估算/路径生成
-.\build\vf_tests.exe
+# 1) 单元测试：311 项断言（core 240 + job 71），ctest 一键跑完约 4 秒
+ctest --test-dir build --output-on-failure
 
-# 端到端（真实 ffmpeg + 真实文件）：生成素材 → GUI 自测截图 → 真实转换
-powershell -File scripts/make-test-media.ps1
-.\build\VideoForge.exe --screenshot shots --autoconvert testdata\演示视频-720p.mp4
+# 2) 端到端：8 个场景，用一个独立临时目录跑真实转换，并用 ffprobe 复核产物
+powershell -File scripts/run-scenarios.ps1
+powershell -File scripts/run-scenarios.ps1 -IncludeSlow   # 额外加上 HEVC（较慢）
+
+# 3) 重新生成文档里的 6 张界面截图
+powershell -File scripts/make-screenshots.ps1
 ```
 
-详细的测试环境、用例与证据见 [docs/TEST_REPORT.md](docs/TEST_REPORT.md)。
+演示素材用的是**真实视频**（放在 `testdata/`，该目录不入库）：
+
+| 文件 | 规格 | 用途 |
+|---|---|---|
+| `演示视频.mp4` | 1280×720 30fps H.264 + AAC，2 分 07 秒 | 主素材 |
+| `演示视频-带字幕.mkv` | 同上 + 一条中文字幕轨 | 字幕保留 / 无损换壳 |
+| `音乐-正弦波.mp3` | 44.1kHz MP3 10 秒 | 纯音频输入（验证用视频预设转音频会被拦下） |
+
+需要合成的彩条素材时，`scripts/make-test-media.ps1` 仍可按需生成，用于纯自动化测试。
+
+详细的测试环境、用例与证据（含 11 个真实缺陷的发现与修复复盘）见
+[docs/TEST_REPORT.md](docs/TEST_REPORT.md)。
+
+### 自动化测试开关
+
+`VideoForge.exe` 本身带一套自测开关，CI 与本地排查都用它：
+
+```powershell
+.\build\VideoForge.exe --screenshot shots --autoconvert <文件>          # 转换并在关键节点自动截图
+.\build\VideoForge.exe --screenshot shots --theme light --window-size 1366x740 <文件>
+.\build\VideoForge.exe --screenshot shots --preset mkv-remux --subtitles copy <文件>
+.\build\VideoForge.exe --screenshot shots --select <文件名子串> <若干文件>  # 验证"只转选中项"
+.\build\VideoForge.exe --install-ffmpeg <zip 的 http 地址>               # 无界面下载安装 ffmpeg
+```
+
+`--screenshot` 模式在触发转换后会**等队列真正空闲**再抓"完成"图，不依赖固定睡眠时长。
 
 ---
 

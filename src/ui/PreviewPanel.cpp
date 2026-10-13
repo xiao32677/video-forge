@@ -95,31 +95,78 @@ QString speedText(const QString &preset)
     return table.value(preset, preset);
 }
 
+/// 往信息表里填「项目 / 值」。
+///
+/// 这里刻意做成"每行两组键值"而不是一组：
+/// 信息项有 9 个左右，一组一行的写法在预览区有限的高度里只露得出一行，
+/// 而这张表横向又只用了左边一小半 —— 高度不够、宽度浪费。
+/// 两列并排后行数减半，宽度也用上了。
+/// 值特别长的（例如完整路径）独占整行并把值跨 3 列，避免被省略号截断。
 void fillTable(QTableWidget *table, const QList<QPair<QString, QString>> &rows)
 {
-    table->setRowCount(rows.size());
+    QVector<QPair<int, int>> placement; // (行号, 键所在列)
+    int row = 0;
+    int col = 0;
     for (int i = 0; i < rows.size(); ++i) {
+        const bool wide = rows.at(i).second.size() > 30;
+        if (wide && col != 0) { // 长项必须从新行开始，否则跨列会和左半边打架
+            ++row;
+            col = 0;
+        }
+        placement.append(qMakePair(row, col));
+        if (wide) {
+            ++row;
+            col = 0;
+        } else if (col == 0) {
+            col = 2;
+        } else {
+            ++row;
+            col = 0;
+        }
+    }
+
+    table->clearContents();
+    table->clearSpans();
+    table->setRowCount(placement.isEmpty() ? 0 : placement.last().first + 1);
+
+    for (int i = 0; i < rows.size(); ++i) {
+        const int r = placement.at(i).first;
+        const int c = placement.at(i).second;
+        const QString &value = rows.at(i).second;
+
         auto *keyItem = new QTableWidgetItem(rows.at(i).first);
         keyItem->setForeground(theme::mutedText());
-        table->setItem(i, 0, keyItem);
-        table->setItem(i, 1, new QTableWidgetItem(rows.at(i).second));
+        table->setItem(r, c, keyItem);
+
+        auto *valueItem = new QTableWidgetItem(value);
+        valueItem->setToolTip(value); // 单元格放不下时可以悬停看全
+        table->setItem(r, c + 1, valueItem);
+
+        if (c == 0 && value.size() > 30)
+            table->setSpan(r, 1, 1, 3);
     }
-    table->resizeColumnToContents(0);
-    table->horizontalHeader()->setStretchLastSection(true);
 }
 
 QTableWidget *makeInfoTable(QWidget *parent)
 {
     auto *table = new QTableWidget(parent);
-    table->setColumnCount(2);
-    table->setHorizontalHeaderLabels({QStringLiteral("项目"), QStringLiteral("值")});
+    // 四个列 = 两组「项目 / 值」，见 fillTable 的说明
+    table->setColumnCount(4);
     table->verticalHeader()->setVisible(false);
+    // 键值对不需要列标题：既省下一行高度，也避免"项目/值"重复出现两次
+    table->horizontalHeader()->setVisible(false);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
     table->setSelectionMode(QAbstractItemView::SingleSelection);
     table->setShowGrid(false);
     table->setAlternatingRowColors(true);
-    table->horizontalHeader()->setHighlightSections(false);
+    table->setWordWrap(false);
+
+    QHeaderView *header = table->horizontalHeader();
+    header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(1, QHeaderView::Stretch);
+    header->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(3, QHeaderView::Stretch);
     return table;
 }
 
@@ -152,7 +199,9 @@ PreviewPanel::PreviewPanel(QWidget *parent)
 
 #if VF_ENABLE_PLAYER
     m_videoWidget = new QVideoWidget(m_stack);
-    m_videoWidget->setMinimumHeight(200);
+    // 视频画面要让位给下面的信息表：信息展示是核心功能，
+    // 之前给它 200 的最小高度会把信息表挤到只剩一行可见。
+    m_videoWidget->setMinimumHeight(130);
     m_stack->addWidget(m_videoWidget);
 #else
     m_stack->addWidget(new QLabel(QStringLiteral("（本构建未启用内嵌播放器）"), m_stack));
@@ -166,6 +215,8 @@ PreviewPanel::PreviewPanel(QWidget *parent)
     videoLayout->addWidget(m_stack, 1);
     videoLayout->addWidget(m_hintLabel);
 
+    // 画面与信息表按 5:4 分配富余空间：信息表至少要能看清几行，
+    // 之前是 5:3，且信息表最小高度只有 90，实际只显示出一行。
     layout->addWidget(videoCard, 5);
 
     // ------------------------------------------------------------ 播放控制
@@ -346,9 +397,9 @@ void PreviewPanel::buildInfoArea(QWidget *container)
     m_infoTabs->addTab(m_videoTable, QStringLiteral("视频流"));
     m_infoTabs->addTab(m_audioTable, QStringLiteral("音频流"));
     m_infoTabs->addTab(m_extraTable, QStringLiteral("字幕 / 章节"));
-    m_infoTabs->setMinimumHeight(90);
+    m_infoTabs->setMinimumHeight(150);
 
-    layout->addWidget(m_infoTabs, 3);
+    layout->addWidget(m_infoTabs, 4);
 }
 
 void PreviewPanel::setPlayerEnabled(bool enabled)

@@ -1043,6 +1043,11 @@ void MainWindow::triggerConversionForTest()
     onStartConversion();
 }
 
+bool MainWindow::isConvertingForTest() const
+{
+    return m_queue && m_queue->isBusy();
+}
+
 bool MainWindow::setPresetForTest(const QString &presetId)
 {
     return m_settings->setPresetById(presetId);

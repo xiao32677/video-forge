@@ -62,6 +62,8 @@ public:
     bool setSubtitleModeForTest(const QString &mode);
     /// 按文件名子串多选媒体库内容（验证"只转选中项"）
     int selectForTest(const QString &substring);
+    /// 队列是否还有活在干（--screenshot 用它等"真的转完"再截图，而不是固定等 N 秒）
+    bool isConvertingForTest() const;
 
     /// 布局诊断：列出界面里"最小宽度需求"最大的若干控件。
     /// 用于排查"某个控件把侧栏撑宽导致右侧被裁掉"这类问题。
