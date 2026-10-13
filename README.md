@@ -3,9 +3,9 @@
 > 一个 **Windows 原生桌面客户端**（Qt 6 + C++17），基于 **ffmpeg 命令行** 完成音视频格式转换。
 > 目标用户是"不懂编解码参数的普通人"：拖进来 → 看一眼 → 点开始 → 拿到文件。
 
-[![build](https://github.com/OWNER/video-forge/actions/workflows/build.yml/badge.svg)](https://github.com/OWNER/video-forge/actions/workflows/build.yml)
+[![build](https://github.com/xiao32677/video-forge/actions/workflows/build.yml/badge.svg)](https://github.com/xiao32677/video-forge/actions/workflows/build.yml)
 
-<!-- 推送前把上面两处 OWNER 换成你的 GitHub 用户名，否则徽章会 404 -->
+
 
 ![主界面](docs/images/01-主界面-深色.png)
 
