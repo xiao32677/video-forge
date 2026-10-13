@@ -5,7 +5,13 @@ name: build
 #
 # 说明：本项目只支持 Windows（Qt 6.9.3 + MinGW 13.1），所以矩阵只有 windows-latest。
 # 单元测试不需要 ffmpeg（job 层用的是 tests/fake_ffmpeg.cpp 这个测试替身），
-# 所以 CI 里不下载 115MB 的 ffmpeg，构建 + 测试能在两分钟内跑完。
+# 所以 CI 里不下载 115MB 的 ffmpeg，构建 + 测试能在几分钟内跑完。
+#
+# 两个曾经踩过的坑（已修，见下面的注释）：
+#   1) install-qt-action 默认只装 qtbase 等基础模块，**不含 Qt Multimedia**，
+#      必须显式写 modules: qtmultimedia；
+#   2) 不指定编译器的话，CMake 会挑 runner 自带的 MinGW（GCC 15.x），
+#      与 Qt 官方 MinGW 13.1 构建 ABI 不匹配，必须显式用 tools_mingw1310。
 
 on:
   push:
@@ -22,27 +28,60 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 安装 Qt 6.9.3 (MinGW) 与工具链
+      - name: 安装 Qt 6.9.3 (MinGW) 与配套工具链
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.9.3'
           arch: win64_mingw
+          # Qt Multimedia 不是基础模块，本项目的内嵌播放器需要它
+          modules: 'qtmultimedia'
+          # 必须装 Qt 配套的 MinGW 13.1，否则和 Qt 的 ABI 不一致
+          tools: 'tools_mingw1310'
           cache: true
 
       - name: 打印环境信息
         shell: pwsh
         run: |
           Write-Host "QT_ROOT_DIR = $env:QT_ROOT_DIR"
+          Write-Host "IQTA_TOOLS  = $env:IQTA_TOOLS"
           cmake --version
           ninja --version
-          g++ --version
+          $mingwBin = Join-Path $env:IQTA_TOOLS 'mingw1310_64\bin'
+          Write-Host "Qt 配套 MinGW 目录存在: $(Test-Path $mingwBin)"
+          if (Test-Path (Join-Path $mingwBin 'g++.exe')) {
+            & (Join-Path $mingwBin 'g++.exe') --version | Select-Object -First 1
+          }
+          Write-Host "PATH 上的 g++: $((Get-Command g++.exe -ErrorAction SilentlyContinue).Source)"
+
+      - name: 确认依赖的 Qt 模块齐全
+        shell: pwsh
+        run: |
+          $required = @('Qt6Core','Qt6Gui','Qt6Widgets','Qt6Concurrent','Qt6Network',
+                        'Qt6Svg','Qt6Multimedia','Qt6MultimediaWidgets')
+          $missing = @()
+          foreach ($m in $required) {
+            $ok = Test-Path (Join-Path $env:QT_ROOT_DIR "lib\cmake\$m")
+            Write-Host ("  {0,-22} {1}" -f $m, $(if ($ok) { 'OK' } else { '缺失' }))
+            if (-not $ok) { $missing += $m }
+          }
+          if ($missing.Count -gt 0) {
+            throw "缺少 Qt 模块：$($missing -join ', ')。请检查 install-qt-action 的 modules 参数。"
+          }
 
       - name: 配置 (CMake + Ninja)
         shell: pwsh
         run: |
+          $mingwBin = Join-Path $env:IQTA_TOOLS 'mingw1310_64\bin'
+          if (-not (Test-Path (Join-Path $mingwBin 'g++.exe'))) {
+            $mingwBin = Split-Path (Get-Command g++.exe).Source
+            Write-Host "未找到 Qt 配套 MinGW，退回 PATH 上的：$mingwBin"
+          } else {
+            Write-Host "使用 Qt 配套的 MinGW：$mingwBin"
+          }
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
+            -DCMAKE_CXX_COMPILER="$mingwBin\g++.exe" `
             -DVF_BUILD_TESTS=ON
 
       - name: 编译
@@ -61,4 +100,5 @@ jobs:
             build/VideoForge.exe
             build/vf_tests.exe
             build/vf_tests_job.exe
+            build/vf_fake_ffmpeg.exe
           if-no-files-found: error
