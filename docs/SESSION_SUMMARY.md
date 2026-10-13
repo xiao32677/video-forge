@@ -364,31 +364,11 @@ VideoForge/
 
 ## 8. 下一步（等你决定）
 
-### 8.1 推送到 GitHub（已就绪，唯一待办）
+### 8.1 已完成的交付（无需再操作）
 
-本地仓库已 `git init` 并完成 5 次提交，`v1.0.0` 注释 tag 与 CI 工作流都已建好。
-本机**没有 `gh`、也没有 GITHUB_TOKEN**，所以推送这一步需要你来执行：
-
-```powershell
-cd VideoForge
-
-# 方式一：用 gh（需先安装并登录）
-gh repo create video-forge --public --source=. --push
-
-# 方式二：先在 GitHub 建好空仓库，再手动推
-git remote add origin https://github.com/<你的账号>/video-forge.git
-git branch -M main
-git push -u origin main
-git push origin v1.0.0
-```
-
-推送后还有两件小事：
-
-1. 把 README 里 CI 徽章链接的 `OWNER` 换成你的 GitHub 用户名；
-2. 到仓库的 Releases 页面新建 `v1.0.0` 发布，把
-   `dist/VideoForge-1.0.0-win64-portable.zip`（99.2 MB）作为附件上传
-   （包体较大，不适合直接进 git 仓库，`.gitignore` 已排除）；
-3. 顺手看一眼 Actions 是否跑绿——**这个工作流还没有在 GitHub 上实跑过**。
+- 仓库已推送：<https://github.com/xiao32677/video-forge>（公开）
+- `v1.0.0` tag 与 Release 已建立，便携包已作为附件上传
+- CI 已在 GitHub Actions 上实跑通过
 
 ### 8.2 可选增强（按优先级，都是"锦上添花"）
 
@@ -412,19 +392,28 @@ git push origin v1.0.0
 | 2 | 视频转换可以用 ffmpeg 的命令行 | ✅ **满足（严格命令行）** | 用 `QProcess` 组装参数列表调用 `ffmpeg.exe`，进度来自 `-progress pipe:1`。**源码里没有任何 ffmpeg 头文件或 libav* 调用**（已用 grep 核实），`VideoForge.exe` 也不直接依赖 `avcodec-*.dll`——包内那几个 `av*.dll` 是 **Qt Multimedia 播放预览**带来的，与转换路径无关。界面里能查看并一键复制真正执行的完整命令行 |
 | 3 | 自己按想法做一些优化 | ✅ **满足** | 共 16 项，其中这些是"超出题目要求"的：批量并发队列、11 个预设、**硬件加速真实试编码探测**（不是只看 `-encoders`）、输出体积预估、**磁盘空间预检并阻止**、**转换后 ffprobe 复核产物**、字幕保留（MKV 复制/MP4 转 mov_text）、裁剪、任务暂停/取消/重试、**ffmpeg 一键下载安装**、错误人话化、深浅双主题、配置持久化、可查看复制的命令行 |
 | 4 | 会话总结 md，且要记录开发者决策与反馈 | ✅ **满足** | `docs/SESSION_SUMMARY.md`（225 行）：**40 条决策记录**（每条含 决策/备选/理由/代价）+ **5 条反馈记录**（含你要求改用 Qt+C++ 的那次关键纠偏与我的复盘）+ 交付过程时间线 + 我对自己表现的评估。该文档**同时放进便携包**，不用翻仓库 |
-| 5 | 项目提交 GitHub（完成后发链接给 bossHR） | ⏸ **未完成（唯一未满足项）** | 本地仓库已就绪：5 次提交、`v1.0.0` 注释 tag、`.github/workflows/build.yml`、`.gitignore`、MIT LICENSE。缺的只是**推送到远端**——本机无 `gh`、无 GITHUB_TOKEN，按你上一轮的要求"先不管 GitHub，专注代码和文档"暂缓。推送命令见第 8 节 |
+| 5 | 项目提交 GitHub（完成后发链接给 bossHR） | ✅ **已完成** | 仓库：<https://github.com/xiao32677/video-forge>（公开）。含 9 次提交、`v1.0.0` 注释 tag、CI 工作流（**已在 Actions 上实跑全绿**）、MIT LICENSE、`LICENSES/` 第三方许可。Release `v1.0.0` 已附上绿色便携包 `VideoForge-1.0.0-win64-portable.zip`（99.2 MB） |
 | 6 | 界面选型必须与"客户端"强关联 | ✅ **满足（选型就是客户端）** | **Qt 6 Widgets 原生桌面客户端**，不是网页壳。客户端特征逐项落地：原生 Win32 窗口 + 菜单栏/工具栏/状态栏、**系统拖放**（文件与文件夹）、`Ctrl+V` 粘贴路径、**系统托盘**、关窗三选一问询、`QSettings` 持久化窗口与配置、直接调用本地进程、**完全离线**、`windeployqt` 打成免安装绿色包。README 里有与 Web/Electron/Python-GUI/QML 的关联度对比与排除理由 |
 | 7 | 给人用 + 必须自己测试 | ✅ **满足** | ① **测试规模**：core 层 240 项 + job 层 71 项断言（`ctest` 一键跑完 4 秒），**10 个端到端场景**在真实 ffmpeg 上验证；② **测试是真的**：真的合成素材、真的转、真的用 ffprobe 校验产物、真的截图看界面；③ **产物级验证**：便携包在**只含 `system32` 的 PATH** 下解压运行退出码 0；④ 过程中发现并修复 **10 个真实缺陷**（含 2 个必现崩溃/功能失效、1 个我自己引入的回归） |
 
-**结论：7 条里 6 条已满足，唯一未满足的是第 5 条 GitHub 推送**（按你的指示暂缓，材料已全部备好）。
+**结论：7 条要求全部满足。**
+
+### 线上地址
+
+| 内容 | 链接 |
+|---|---|
+| 仓库主页 | <https://github.com/xiao32677/video-forge> |
+| Release v1.0.0（含便携包下载） | <https://github.com/xiao32677/video-forge/releases/tag/v1.0.0> |
+| 便携包直链（99.2 MB） | <https://github.com/xiao32677/video-forge/releases/download/v1.0.0/VideoForge-1.0.0-win64-portable.zip> |
+| CI 运行记录（全绿） | <https://github.com/xiao32677/video-forge/actions/runs/38363342609> |
 
 ### 仍需注意 / 未验证的部分（我不想含糊过去）
 
 | 项 | 说明 |
 |---|---|
-| CI 未实跑 | `.github/workflows/build.yml` 已写好并通过 YAML 语法校验，但**没有在 GitHub 上真正运行过**（本地无法执行 Actions），首次推送后要看一眼结果 |
-| README 徽章占位符 | 徽章链接里的 `OWNER` 需要在推送前替换成你的 GitHub 用户名 |
+| ~~CI 未实跑~~ | ✅ **已解决**：推送后在 GitHub Actions 上实跑通过（12 个步骤全绿）。首次运行其实是失败的——`install-qt-action` 默认不含 Qt Multimedia，且会挑中 runner 自带的 GCC 15.2 与 Qt 的 GCC 13.1 ABI 不一致。两处都已修复，失败复盘写进了 `docs/TEST_REPORT.md` |
 | 硬件加速 | 只在本机（Intel Iris Xe）验证了 QSV 可用、NVENC/AMF 被正确排除；**没有 N 卡/A 卡机器上实测** |
 | DPI 缩放 | 125% / 150% 缩放下的像素对齐**没有逐项核对过**，只验证了 100% 下的多种窗口尺寸 |
 | 交互路径 | 拖放、托盘、剪贴板粘贴、暂停/继续按钮这些是手动验证的（暂停/取消/重试的状态机已由 job 层单测覆盖，但"点按钮"这一步没有自动化） |
 | 超大文件 | >10GB 的文件未实测（ffprobe 给了 30 秒超时，抽帧 20 秒） |
+| 提交作者 | 提交署名为本机配置的 `VideoForge Dev <videoforge@example.com>`，不会关联到你的 GitHub 账号；如需归属到你名下，需要重写历史（`git rebase --root` 或重新提交） |

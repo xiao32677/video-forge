@@ -342,7 +342,45 @@ ctest --test-dir build -R vf_e2e --output-on-failure
 
 ### 当前 CI 状态
 
-`.github/workflows/build.yml` 会在 `windows-latest` 上安装 Qt 6.9.3 + MinGW、
-配置、编译、跑 `ctest`。**该工作流已写好并通过 YAML 语法校验，但尚未在 GitHub 上实际运行过**
-（本地无法执行 GitHub Actions），首次推送后需要看一眼运行结果。
-单元测试不依赖真实 ffmpeg，所以 CI 不需要下载 115MB 的二进制。
+`.github/workflows/build.yml` 会在 `windows-latest` 上安装 Qt 6.9.3 + 配套 MinGW 13.1、
+配置、编译、跑 `ctest`，并上传构建产物。单元测试不依赖真实 ffmpeg，
+所以 CI 不需要下载 115MB 的二进制，一次运行约 2 分钟。
+
+**已在 GitHub Actions 上实跑通过**（全绿）：
+<https://github.com/xiao32677/video-forge/actions/runs/38363342609>
+
+| 步骤 | 结论 |
+|---|---|
+| 检出代码 | success |
+| 安装 Qt 6.9.3 (MinGW) 与配套工具链 | success |
+| 打印环境信息 | success |
+| 确认依赖的 Qt 模块齐全 | success |
+| 配置 (CMake + Ninja) | success |
+| 编译 | success |
+| 运行单元测试 | success |
+| 上传构建产物 | success |
+
+#### 第一次 CI 运行是失败的（记录于此，因为它很典型）
+
+第一次运行在 **CMake 配置阶段**就失败了：
+
+```
+Could NOT find Qt6Multimedia (missing: Qt6Multimedia_DIR)
+Failed to find required Qt component "Multimedia".
+```
+
+两个根因：
+
+1. `install-qt-action` 在 `win64_mingw` 下内部执行的是
+   `aqt install-qt ... --autodesktop`，它只装 `qtbase / qtsvg / qttools /
+   qttranslations / qtdeclarative`，**不包含 `qtmultimedia`**。
+   本项目内嵌播放器需要 Qt Multimedia，必须显式写 `modules: qtmultimedia`。
+2. 没有指定编译器时，CMake 挑中了 runner 自带的 `C:/mingw64`（GCC **15.2.0**），
+   而 Qt 6.9.3 的官方 MinGW 构建是 GCC **13.1.0**。两套 `libstdc++` ABI 不一致，
+   即使配置侥幸通过，链接或运行阶段也可能出问题。
+   改为安装 `tools_mingw1310` 并显式传 `CMAKE_CXX_COMPILER`。
+
+同时新增了一个「确认依赖的 Qt 模块齐全」步骤：逐个检查 8 个必需模块并打印 OK/缺失，
+缺任何一个直接抛错。**这条教训值得记**：CI 的价值不只是"跑通"，而是"跑不通时能一眼看出为什么"。
+第一版工作流是我在没有 GitHub 环境的情况下写的，属于"没验证就交付"——
+和我自己反复强调的原则相悖，正好被这次实跑纠正了。
