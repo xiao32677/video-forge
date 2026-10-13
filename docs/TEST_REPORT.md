@@ -406,8 +406,12 @@ powershell -File scripts/make-screenshots.ps1 -Only 01,06  # 只重做其中几�
 .\build\VideoForge.exe --screenshot shots --theme light --window-size 1366x740 <文件>   # 小屏布局
 .\build\VideoForge.exe --screenshot shots --preset mkv-remux --subtitles copy <文件>    # 字幕保留
 .\build\VideoForge.exe --screenshot shots --select <子串> <若干文件>                     # 只转选中项
+.\build\VideoForge.exe --screenshot shots --show-window <文件>                          # 把窗口显示出来看
 .\build\VideoForge.exe --install-ffmpeg <zip 的 http 地址>                              # 无界面安装 ffmpeg
-# --screenshot 模式在触发转换后会**等队列真正空闲**再抓"完成"图，不靠固定睡眠
+# --screenshot 模式有两个刻意的设计：
+#   a) 窗口默认不显示在屏幕上（WA_DontShowOnScreen + 不激活）——grab() 直接渲染控件树，
+#      不依赖窗口可见，所以自动化跑起来不会反复弹窗抢焦点；
+#   b) 触发转换后等队列真正空闲再抓"完成"图，不靠固定睡眠。
 
 # 7) 端到端 CTest 脚本（默认 DISABLED，需要真实 ffmpeg 与图形环境）
 ctest --test-dir build -R vf_e2e --output-on-failure

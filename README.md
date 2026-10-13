@@ -273,10 +273,16 @@ powershell -File scripts/make-screenshots.ps1
 .\build\VideoForge.exe --screenshot shots --theme light --window-size 1366x740 <文件>
 .\build\VideoForge.exe --screenshot shots --preset mkv-remux --subtitles copy <文件>
 .\build\VideoForge.exe --screenshot shots --select <文件名子串> <若干文件>  # 验证"只转选中项"
+.\build\VideoForge.exe --screenshot shots --show-window <文件>           # 也想亲眼看界面时用
 .\build\VideoForge.exe --install-ffmpeg <zip 的 http 地址>               # 无界面下载安装 ffmpeg
 ```
 
-`--screenshot` 模式在触发转换后会**等队列真正空闲**再抓"完成"图，不依赖固定睡眠时长。
+`--screenshot` 模式有两点是刻意设计的：
+
+- **窗口默认不显示在屏幕上**（`WA_DontShowOnScreen` + 不激活）。`QWidget::grab()`
+  是直接把控件树渲染进 QPixmap，不依赖窗口可见，所以截图质量不受影响，
+  但跑一轮自动化不会再反复弹窗抢焦点。想看着它跑就加 `--show-window`。
+- 触发转换后**等队列真正空闲**再抓"完成"图，不依赖固定睡眠时长。
 
 ---
 

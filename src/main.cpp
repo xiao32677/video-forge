@@ -70,6 +70,9 @@ int main(int argc, char *argv[])
         QStringLiteral("install-ffmpeg"),
         QStringLiteral("无界面下载并安装 ffmpeg（自动化测试用），参数为下载地址"),
         QStringLiteral("url"));
+    QCommandLineOption showWindowOption(
+        QStringLiteral("show-window"),
+        QStringLiteral("截图模式下也把窗口显示出来（默认挪到屏幕外，不打扰用户）"));
     parser.addOption(themeOption);
     parser.addOption(screenshotOption);
     parser.addOption(autoConvertOption);
@@ -78,6 +81,7 @@ int main(int argc, char *argv[])
     parser.addOption(selectOption);
     parser.addOption(windowSizeOption);
     parser.addOption(installFfmpegOption);
+    parser.addOption(showWindowOption);
     parser.process(app);
 
     // ---------------------------------------------------------------- 无界面安装 ffmpeg
@@ -142,6 +146,16 @@ int main(int argc, char *argv[])
     if (screenshotMode) {
         QDir().mkpath(screenshotDirectory);
         window.resize(1500, 1000);
+
+        // 自测截图不需要真的出现在屏幕上。
+        // 以前每抓一张图就弹一次窗、还会抢焦点，跑一轮文档截图要打断用户六次。
+        // 这里把窗口挪到屏幕外，并且不激活——QWidget::grab() 是直接把控件树
+        // 渲染进 QPixmap，不依赖窗口在屏幕上可见，所以截图结果不受影响。
+        // 想亲眼看界面时加 --show-window 即可。
+        if (!parser.isSet(showWindowOption)) {
+            window.setAttribute(Qt::WA_ShowWithoutActivating, true);
+            window.setAttribute(Qt::WA_DontShowOnScreen, true);
+        }
     }
 
     // 允许显式指定窗口尺寸：用来验证小屏（1366x768 / 1024x768）下的布局
