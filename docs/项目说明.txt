@@ -1,0 +1,357 @@
+VideoForge 视频格式转换器 —— 项目说明
+============================================================
+
+一、项目概述
+------------------------------------------------------------
+VideoForge 是一个面向普通 Windows 用户的视频格式转换工具。它要解决
+的问题是：ffmpeg 能力很强，但普通用户记不住编码参数、看不懂命令行，
+手里一个视频想换成 MP4 或者只想要里面的音频，往往只能去找在线网站
+（慢、限大小、泄露文件）或者照着教程敲一堆参数。
+
+本项目的做法是：把文件拖进窗口 → 选一个预设 → 点开始 → 拿到输出文件。
+转换内核完全基于 ffmpeg 命令行（以独立子进程调用，不接入 ffmpeg API），
+所有关键动作都要能看见、能复制、能校验 —— 用了什么参数、转成了什么、
+失败的原因是什么，界面上都能查到。
+
+设计目标有三条：
+  · 不懂编解码的人也能安全完成转换（预设 + 安全护栏 + 人话报错）；
+  · 不隐藏细节（可查看并一键复制真实执行的完整命令行）；
+  · 不把失败留到事后（转换后用 ffprobe 复核产物、开始前预检磁盘空间）。
+
+结构：单进程桌面程序，无服务端、无数据库。配置用 QSettings 存在注册表，
+媒体文件与输出都在本地磁盘，全程离线。
+
+进程与依赖拓扑：
+
+  ┌──────────────────────────────────────────────┐
+  │ VideoForge.exe（Qt 6 Widgets 桌面客户端）     │
+  │   ui/    界面：原生控件 + 自绘代理 + QSS 主题  │
+  │   job/   任务队列：状态机 / 调度 / 并发控制    │
+  │   core/  纯逻辑：探针 / 命令构建 / 进度解析    │
+  └──────────┬───────────────────────┬───────────┘
+             │ QProcess              │ QProcess
+             ▼                       ▼
+     ┌───────────────┐       ┌───────────────┐
+     │  ffmpeg.exe   │       │  ffprobe.exe  │
+     │  转码 / 抽帧   │       │  读取媒体信息  │
+     └───────┬───────┘       └───────┬───────┘
+             │                       │
+             ▼                       ▼
+  本地磁盘：源文件 / 输出文件 / 缩略图缓存目录
+
+  运行环境：Windows 10 / 11 x64，无需联网（仅"自动下载 ffmpeg"时联网）
+
+
+二、客户端技术栈
+------------------------------------------------------------
+1. 开发语言与框架
+   · C++17（Qt 6.9.3，mingw_64 版本，安装于 C:\Qt\6.9.3\mingw_64）
+   · 编译器：MinGW-w64 GCC 13.1.0（C:\Qt\Tools\mingw1310_64）
+   · 构建工具：CMake 4.3.1 + Ninja
+   · 运行平台：Windows 10 / 11 x86_64
+
+2. 关键模块
+   · Qt Widgets —— 全部界面用原生控件搭建（QMainWindow、QTableView、
+     QTableWidget、QTabWidget、QPushButton、QComboBox、QSplitter 等），
+     不使用 QML。选型理由见 README：题目要求"客户端"，原生 Win32 窗口
+     才能直接对接系统拖放、托盘、剪贴板与本地进程。
+   · Qt Concurrent —— 媒体探测、缩略图抽帧、硬件能力检测全部放后台，
+     不阻塞主线程。
+   · Qt Network —— ffmpeg 一键下载安装（QNetworkAccessManager，带进度
+     与取消）。
+   · Qt Multimedia / MultimediaWidgets —— 仅用于内嵌播放器"预览"。
+     注意：它与转换路径无关，便携包里那几个 avcodec-*.dll 来自这里，
+     不是本项目在用 ffmpeg API（可用 objdump -p 验证 exe 不直接依赖）。
+   · Qt Svg —— 应用图标。
+   · 样式 —— 自绘主题，不依赖图片资源：
+       ui/Theme.cpp     QSS 令牌表（4 层明暗面 + 强调色），长键优先替换
+       ui/UiStyle.cpp   QProxyStyle，接管下拉箭头与复选框/单选框的绘制
+       ui/Icons.cpp     37 个用 QPainter 画的矢量图标，按颜色/尺寸/DPR 缓存
+
+3. 源码结构（约 1.08 万行 C++，57 个文件）
+   CMakeLists.txt        构建配置（主程序 + 静态库 + 三个测试目标）
+   src/main.cpp          程序入口与命令行（203 行）
+   src/core/             纯逻辑层，23 个文件 2616 行
+     MediaInfo.*           媒体信息数据结构
+     MediaProbe.*          ffprobe 调用 + JSON 解析（parseJson 是纯函数）
+     ThumbnailService.*    抽帧与缓存（独立 QThreadPool）
+     ConvertPreset.*       12 个内置预设
+     CommandBuilder.*      ffmpeg 参数生成（纯函数，可单测）
+     ProgressParser.*      -progress 输出解析（纯函数）
+     SizeEstimator.*       输出体积预估、磁盘余量判定
+     HwAccelDetector.*     硬件编码器真实试编码探测
+     FfmpegLocator.*       多层候选目录定位 ffmpeg
+     FfmpegInstaller.*     下载 → 解压 → 安装 → 校验
+     Format.*              体积/时长/码率的人类可读格式化
+   src/job/              任务层，4 个文件 806 行
+     ConvertJob.*          单个转换任务的状态机与进程管理
+     JobQueue.*            队列调度、并发控制、取消/重试
+   src/ui/               界面层，26 个文件 6192 行
+     MainWindow.*          主窗口与所有业务串联（1349 行）
+     PreviewPanel.*        画面 + 播放控制 + 胶片条 + 信息表
+     MediaLibraryPanel.*   媒体库（自绘条目代理 + 缩略图加载）
+     ConvertSettingsPanel.* 预设/画质/尺寸/裁剪/字幕/估算
+     JobQueuePanel.*       队列表格（自绘进度条与状态胶囊）
+     FilmstripWidget.*     12 帧胶片条
+     LogPanel.*            日志与 ffmpeg 命令行
+     FfmpegDownloadDialog.* 一键下载 ffmpeg 的进度对话框
+     Theme / UiStyle / Icons / UiWidgets / AppIcon
+   tests/                单元测试与测试替身（1 个假 ffmpeg）
+   scripts/              构建 / 打包 / 下载 ffmpeg / 场景回归 / 生成截图
+   assets/               图标（ico/rc/png）
+   docs/                 架构、测试报告、会话总结、本文档
+
+4. 启动流程（main.cpp 五步）
+   (1) 创建 QApplication，设置应用名与组织名
+       （QSettings 的键路径依赖它，改了会导致旧配置"丢失"）；
+   (2) 解析命令行：--theme / --screenshot / --autoconvert / --preset /
+       --subtitles / --select / --window-size / --install-ffmpeg /
+       --show-window；
+   (3) 若有 --install-ffmpeg 则进入无界面安装模式，装完直接返回退出码，
+       不进事件循环（供自动化验证整条下载链路）；
+   (4) 应用主题（调色板 + QSS + 字体），创建 MainWindow 并恢复配置
+       （窗口几何、分栏比例、主题、输出目录、并发数、上次预设与字幕策略）；
+   (5) show() 显示；若在 --screenshot 自测模式，则注册截图时间线，
+       并把窗口设为不在屏幕上显示（见 六.5）。
+
+5. 客户端功能清单
+   · 导入：添加文件 / 添加文件夹（递归）/ 系统拖放 / Ctrl+V 粘贴路径
+   · 媒体信息：ffprobe JSON → 容器、时长、文件大小、总码率、编码概览、
+     视频流、音频流、字幕与章节。信息表按"每行两组键值"排布，长值
+     （如完整路径）独占整行并跨列，放不下时可悬停看全
+   · 缩略图三处：
+       智能挑帧封面   取 5 个候选时间点，比灰度标准差，避开纯黑/纯色帧
+       胶片条         12 帧，可点击跳转、滚轮微调时间
+       媒体库小图     列表条目左侧的缩略图
+     三者都走磁盘缓存，二次打开秒显
+   · 转换预设 12 个：
+       视频  MP4/H.264、MP4/HEVC、WebM/VP9、MKV 无损换壳、MOV、AVI
+       图片  GIF
+       音频  MP3、M4A、WAV、FLAC、M4A 直接复制
+   · 批量队列：并发数可调、任务可暂停/取消/重试，显示进度/速度/剩余
+     时间/输出路径；完成的行尾带 ✓ 与 ffprobe 复核结果
+   · 硬件加速：真实试编码探测，可用则头部显示"硬件加速 · Intel Quick
+     Sync"等，不可用自动回退软件编码
+   · 字幕：丢弃 / 保留原字幕轨（MKV 复制原轨、MP4 转 mov_text）；
+     选择丢弃时会明确提示"源文件有 N 条字幕轨，将被丢弃"
+   · 裁剪：把当前播放位置设为起点/终点
+   · 安全护栏：磁盘空间预检（不足直接阻止并报差额）、转换后 ffprobe
+     复核产物（存在性/流/时长）
+   · 命令行透明：日志面板可切到"ffmpeg 命令行"，查看并一键复制真实
+     执行的完整命令
+   · 内嵌播放器：播放/暂停/进度/音量/倍速（与转换互不影响）
+   · 其它：深浅双主题、配置持久化、系统托盘、关窗三选一问询
+
+
+三、转换内核与 ffmpeg 集成
+------------------------------------------------------------
+1. 为什么用命令行而不是 ffmpeg API
+   · 题目要求就是命令行；工程上也确实更合适：
+     不需要链接 libav*，不需要处理 ABI 与编译期依赖，升级 ffmpeg 只要
+     换一份二进制；
+     用户还可以自己替换成任意构建（例如 LGPL 版本），程序会自动用。
+   · 代价：进度要自己解析、进程生命周期要自己管、参数正确性要自己保证。
+   · 事实核查（面试常被问）：源码里零 libav* 引用；VideoForge.exe 不
+     直接依赖 avcodec-*.dll。便携包里的 av*.dll 是 Qt Multimedia 的
+     播放后端带来的，与转换路径无关。
+
+2. 命令是怎么拼的
+   · CommandBuilder::build(MediaInfo, ConvertPreset, Options) 是纯函数，
+     输入确定则输出确定，因此可以脱离 ffmpeg 做单元测试。
+   · 统一的参数骨架：
+       -y -hide_banner -nostdin -loglevel warning -stats_period 0.4
+       -progress pipe:1 -i <输入> [裁剪 -ss/-to] [-map 0:v:0? -c:v ...]
+       [-map 0:a:0? -c:a ...] [字幕策略] [-crf / -b:v / -preset] <输出>
+   · 关键点：视频预设遇到纯音频文件，在**入队前**就判定不可行并给出
+     原因（"源文件没有视频流，请改用音频预设"），不会创建即销毁任务。
+   · 无损换壳预设走 -c:v copy -c:a copy，只换容器不重编码。
+
+3. 进度怎么来的
+   · ffmpeg 用 -progress pipe:1 输出 key=value 块，ProgressParser 解析
+     out_time_us / speed / fps / frame / total_size / progress=end。
+   · 百分比 = 已处理时长 / 总时长；剩余时间 = 剩余时长 / speed。
+   · 解析器是纯函数，有独立单测（包括半包、乱序、异常值的用例）。
+
+4. 媒体信息（ffprobe）
+   · MediaProbe 调 ffprobe -v error -print_format json -show_format
+     -show_streams -show_chapters。
+   · parseJson 是纯函数，喂字符串就能测，不需要真的跑 ffprobe。
+   · probeAsync 用 QSemaphore 把并发限到 4 路：一次导入几十个文件时，
+     不会同时拉起几十个 ffprobe 把机器打满。
+
+5. 抽帧与缩略图
+   · 不从头解码到目标位置，而是把 -ss 放在 -i **之前**（输入定位），
+     速度差一个数量级。
+   · ThumbnailService 用独立 QThreadPool（3 线程），胶片条 12 帧并行取；
+     原来是串行，12 帧要排队启动 12 个 ffmpeg。
+   · 封面挑帧不是取中间帧，而是取 5 个候选点比较灰度标准差，避开
+     纯黑/纯色/转场帧。
+
+6. 硬件加速怎么判断（本项目最有价值的一个修正）
+   · 只解析 ffmpeg -encoders 会**误报**：实测那台 Intel Iris Xe 机器上，
+     h264_nvenc 被列为可用，实际执行退出码 -1；h264_amf 也是错的。
+   · 改法：真编一帧验证
+       ffmpeg -f lavfi -i nullsrc -frames:v 1 -c:v <encoder> -f null -
+     退出码 0 才认为可用（实测 h264_qsv 通过，于是正确显示
+     "硬件加速 · Intel Quick Sync"）。
+   · 不可用则自动回退 libx264 / libx265，不硬塞参数。
+
+7. 产物校验与磁盘预检
+   · 转换结束后（哪怕退出码是 0）不直接判成功，而是再用 ffprobe 复核：
+     文件存在且非空、流齐全、时长与源接近（容差 max(3.0 秒, 时长×8%)）。
+     GIF 因为时长不可靠跳过这一项。
+   · 开始前按输出目录所在卷汇总预估体积（留 10% 余量），不足则直接
+     阻止开始，并明确告诉用户"预计需要 / 当前可用 / 还差多少"。
+
+
+四、任务队列与并发设计
+------------------------------------------------------------
+1. 三层结构
+   core（纯逻辑）→ job（状态机与调度）→ ui（界面）。
+   core + job 编成静态库 videoforge_core，主程序和两个测试程序链接同
+   一份实现 —— 测的就是真正在跑的那份代码，不是复制品。
+
+2. ConvertJob 状态机
+   排队中 → 转换中 → 已完成 / 失败 / 已取消
+   支持 pause / resume / cancel / retry；每个任务持有自己的 QProcess、
+   自己的进度解析器，互不干扰。
+
+3. JobQueue 调度
+   maxConcurrent 控制并发数（默认 2，可在界面调）；按入队顺序启动，
+   完成一个补一个；提供 cancelAll / pauseAll / resumeAll，以及
+   overallProgress 供状态栏总进度使用。
+
+4. 并发治理的三处（都是实测出来的）
+   · ffprobe 探测限流 4 路 —— 防止导入时进程爆炸；
+   · 抽帧用独立线程池 —— 原来探测和抽帧抢同一个池，导入大文件后
+     缩略图迟迟不出来；
+   · 队列进度按行重绘 + 统计增量维护 —— 原来每来一次进度事件就整表
+     重绘，且每次重算统计要 O(n) 扫全表。
+
+5. 一个真实的崩溃（很值得记）
+   · 现象：批量导入 4 个文件（含 1 个纯音频）点"开始转换"，进程以
+     0xC0000005（访问违规）崩溃，而且一个输出文件都没生成。
+   · 根因：JobQueue::removeJob 里先调 job->cancel()，而"排队中"的任务
+     取消是同步的，于是同步 emit finished → 信号处理器里又调了一次
+     removeJob → 同一次 m_jobs.removeAt(i) 被执行两遍 → 越界。
+     触发条件恰好是"用视频预设转换纯音频文件"（参数不可行 → 入队后
+     立刻被移除）。
+   · 修法：先 takeAt 把任务从列表摘出来，再 cancel（重入时列表里已经
+     找不到这个 id，直接返回）；同时把不可行的任务改成入队前预检，
+     从源头不创建"创建即销毁"的任务。
+
+
+五、怎么跑起来
+------------------------------------------------------------
+1. 直接用便携包（推荐，零依赖）
+     解压 VideoForge-1.0.0-win64-portable.zip 到任意目录
+     双击 VideoForge.exe
+   包内已含 ffmpeg/ffprobe 与 Qt 运行库，不需要安装任何东西，也不需要
+   配置 PATH。已验证：PATH 只留 C:\Windows\system32;C:\Windows 时仍可
+   正常运行并完成转换。
+
+2. 从源码构建（需要先装 Qt 6.9.3 mingw_64 + MinGW 13.1 + CMake + Ninja）
+     cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+       -DCMAKE_PREFIX_PATH="C:/Qt/6.9.3/mingw_64" `
+       -DCMAKE_CXX_COMPILER="C:/Qt/Tools/mingw1310_64/bin/g++.exe" `
+       -DCMAKE_MAKE_PROGRAM="D:/Qt/Tools/Ninja/ninja.exe"
+     cmake --build build --parallel 8
+   全新克隆实测：配置 + 编译约 1 分钟，0 错误。
+
+3. 准备 ffmpeg（源码构建后需要，仓库里不含 ffmpeg 二进制）
+     powershell -File scripts/get-ffmpeg.ps1
+   或者直接运行程序，点状态栏"未找到 ffmpeg"，选"自动下载并安装"
+   （下载 → 解压 → 安装到程序目录 → 校验可执行 → 自动接管）。
+
+4. 跑测试
+     ctest --test-dir build --output-on-failure     # 单元测试，约 4 秒
+     powershell -File scripts/run-scenarios.ps1     # 8 项端到端场景回归
+     powershell -File scripts/run-scenarios.ps1 -IncludeSlow   # 加 HEVC
+
+5. 重新生成文档里的界面截图
+     powershell -File scripts/make-screenshots.ps1
+     powershell -File scripts/make-screenshots.ps1 -Only 01,02    # 只重做几张
+
+6. 打包绿色便携版
+     powershell -File scripts/package.ps1
+   产物在 dist/VideoForge-<版本>-win64-portable.zip。
+
+7. 界面自测开关（排查与自动化都用它）
+     VideoForge.exe --screenshot shots --autoconvert <文件>
+     VideoForge.exe --screenshot shots --theme light --window-size 1366x740 <文件>
+     VideoForge.exe --screenshot shots --preset mkv-remux --subtitles copy <文件>
+     VideoForge.exe --screenshot shots --select <文件名子串> <若干文件>
+     VideoForge.exe --install-ffmpeg <zip 的 http 地址>
+     VideoForge.exe --screenshot shots --show-window <文件>   # 想亲眼看界面
+
+
+六、部署踩坑（实测）
+------------------------------------------------------------
+1. 便携包启动即报 0xC0000135（找不到 DLL）
+   windeployqt 加 --no-compiler-runtime 会跳过 libstdc++-6.dll、
+   libgcc_s_seh-1.dll、libwinpthread-1.dll，而 qwindows.dll 和
+   ffmpegmediaplugin.dll 需要它们。去掉该参数；同时不要给 exe 加
+   -static（会和 Qt 的动态库冲突）。
+
+2. 硬件加速"假阳性"
+   只查 ffmpeg -encoders 会骗人（详见三.6）。必须真编一帧验证。
+
+3. PowerShell 脚本里的中文变成乱码
+   PowerShell 5.1 会把无 BOM 的 UTF-8 脚本按 GBK 解释，中文全烂
+   （"完成："变成"瀹屾垚锛?"）。所有 .ps1 必须存成 UTF-8 **with BOM**。
+   注意：某些编辑器/工具保存时会去掉 BOM，改完脚本要复查。
+
+4. 截图不可复现
+   QSettings 会记住上次的窗口几何与分栏比例，同样的命令两次截出来的
+   样子不一样。修法：环境变量 VF_RESET_LAYOUT=1 忽略保存的布局，并且
+   每次运行前删掉 HKCU\Software\VideoForge。
+
+5. 用固定睡眠等异步完成，会"抓到假图"
+   截图脚本原来写死"触发转换后等 30 秒再抓完成图"。换成 2 分钟的真实
+   素材后，30 秒只转完 66%，截到的"批量转换完成"其实是转换中。
+   改成轮询队列是否空闲（上限 5 分钟兜底），素材多长、预设多慢都能抓到
+   正确的那一帧。
+
+6. 测试素材被别的程序占用，输出文件名冒出 "(2)"
+   testdata 里残留的 .mp3/.mp4 被音乐播放器或同步盘占用时删不掉，
+   程序的重名保护会给新文件加 (2) 后缀，演示图里看着像故障。脚本要
+   检测并在删除失败时明确告警，而不是悄悄产出。
+
+7. 从 PowerShell 启动 WIN32 GUI 必须 Start-Process -Wait
+   直接调用不会等待，子进程会随着父任务一起被杀 —— 第一次自测"只截到
+   第一张图、没有转换产物"就是这个原因，一度被误判成程序 bug。
+
+8. 自测模式下反复弹窗打扰用户
+   最初每抓一张图就启动一次程序（6 张 = 6 次弹窗，还会抢焦点）。
+   两处修法：给窗口加 WA_DontShowOnScreen（QWidget::grab() 是直接渲染
+   控件树，不依赖窗口可见，截图结果不受影响）；一次启动产出多张截图，
+   6 次启动压到 4 次。
+
+
+七、已知限制与可改进方向
+------------------------------------------------------------
+· 硬件加速只在本机（Intel Iris Xe）验证过 QSV 可用、NVENC/AMF 被正确
+  排除，**没有 N 卡 / A 卡机器实测**。这是最需要补的一块。
+· 125% / 150% DPI 缩放下的像素对齐没有逐项核对过，只验证了 100% 缩放
+  下的多种窗口尺寸。高分屏用户可能遇到轻微错位。
+· 拖放、托盘、剪贴板粘贴、暂停/继续按钮属于**手动验证**：任务状态机
+  有单测覆盖，但"点按钮"这一层没有自动化。
+· >10GB 的超大文件未实测（ffprobe 给 30 秒超时、抽帧 20 秒）。
+· 长路径（>260 字符）没有做 \\?\ 前缀处理，深目录下可能失败。
+· 文件夹递归只到 4 层，更深的会**静默截断**（应该给出提示）。
+· 日志面板用 appendHtml 追加，长时间大量输出可能变卡（已有 4000 行
+  上限兜底）。
+· 字幕只支持"保留全部轨"或"全部丢弃"，不支持挑选特定轨，也不支持
+  烧录进画面。
+· 只取第一条音频轨，多音轨视频转完会丢其余音轨。
+· 体积预估是经验公式（按 CRF 与码率模型），对**已经压过一轮的低码率
+  源**偏差较大 —— 实测把 815 kb/s 的源用 HEVC 重编，产物反而更大。
+· 转换不可恢复：进程崩溃或断电后，已完成的输出文件不会自动清理。
+
+============================================================
+文档生成时间：2026-10-23
+适用版本：VideoForge 1.0.0
+代码仓库：https://github.com/xiao32677/video-forge （tag v1.0.0）
+配套文档：docs/ARCHITECTURE.md（架构与决策）
+          docs/TEST_REPORT.md（11 个真实缺陷的发现与修复复盘）
+          docs/SESSION_SUMMARY.md（决策记录与需求符合性对照）
